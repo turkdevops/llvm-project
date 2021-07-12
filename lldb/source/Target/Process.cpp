@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/Threading.h"
 
@@ -292,6 +293,13 @@ bool ProcessProperties::GetStopOnExec() const {
 
 std::chrono::seconds ProcessProperties::GetUtilityExpressionTimeout() const {
   const uint32_t idx = ePropertyUtilityExpressionTimeout;
+  uint64_t value = m_collection_sp->GetPropertyAtIndexAsUInt64(
+      nullptr, idx, g_process_properties[idx].default_uint_value);
+  return std::chrono::seconds(value);
+}
+
+std::chrono::seconds ProcessProperties::GetInterruptTimeout() const {
+  const uint32_t idx = ePropertyInterruptTimeout;
   uint64_t value = m_collection_sp->GetPropertyAtIndexAsUInt64(
       nullptr, idx, g_process_properties[idx].default_uint_value);
   return std::chrono::seconds(value);
@@ -1334,8 +1342,8 @@ Status Process::ResumeSynchronous(Stream *stream) {
 
   Status error = PrivateResume();
   if (error.Success()) {
-    StateType state =
-        WaitForProcessToStop(llvm::None, nullptr, true, listener_sp, stream);
+    StateType state = WaitForProcessToStop(llvm::None, nullptr, true,
+                                           listener_sp, stream);
     const bool must_be_alive =
         false; // eStateExited is ok, so this must be false
     if (!StateIsStoppedState(state, must_be_alive))
@@ -2473,6 +2481,11 @@ Status Process::Launch(ProcessLaunchInfo &launch_info) {
     if (error.Fail())
       return error;
 
+    // Listen and queue events that are broadcasted during the process launch.
+    ListenerSP listener_sp(Listener::MakeListener("LaunchEventHijack"));
+    HijackProcessEvents(listener_sp);
+    auto on_exit = llvm::make_scope_exit([this]() { RestoreProcessEvents(); });
+
     if (PrivateStateThreadIsValid())
       PausePrivateStateThread();
 
@@ -3077,9 +3090,10 @@ Status Process::Halt(bool clear_thread_plans, bool use_run_lock) {
     return Status();
   }
 
-  // Wait for 10 second for the process to stop.
-  StateType state = WaitForProcessToStop(
-      seconds(10), &event_sp, true, halt_listener_sp, nullptr, use_run_lock);
+  // Wait for the process halt timeout seconds for the process to stop.
+  StateType state =
+      WaitForProcessToStop(GetInterruptTimeout(), &event_sp, true,
+                           halt_listener_sp, nullptr, use_run_lock);
   RestoreProcessEvents();
 
   if (state == eStateInvalid || !event_sp) {
@@ -3110,8 +3124,8 @@ Status Process::StopForDestroyOrDetach(lldb::EventSP &exit_event_sp) {
     SendAsyncInterrupt();
 
     // Consume the interrupt event.
-    StateType state =
-        WaitForProcessToStop(seconds(10), &exit_event_sp, true, listener_sp);
+    StateType state = WaitForProcessToStop(GetInterruptTimeout(),
+                                           &exit_event_sp, true, listener_sp);
 
     RestoreProcessEvents();
 
