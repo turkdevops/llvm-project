@@ -49,11 +49,6 @@ class MemoryMapper {
 
   explicit MemoryMapper(const Allocator &allocator) : allocator_(allocator) {}
 
-  ~MemoryMapper() {
-    if (buffer_)
-      UnmapOrDie(buffer_, buffer_size_);
-  }
-
   bool GetAndResetStats(uptr &ranges, uptr &bytes) {
     ranges = released_ranges_count_;
     released_ranges_count_ = 0;
@@ -62,24 +57,14 @@ class MemoryMapper {
     return ranges != 0;
   }
 
-  void *MapPackedCounterArrayBuffer(uptr buffer_size) {
-    // TODO(alekseyshl): The idea to explore is to check if we have enough
-    // space between num_freed_chunks*sizeof(CompactPtrT) and
-    // mapped_free_array to fit buffer_size bytes and use that space instead
-    // of mapping a temporary one.
-    if (buffer_size_ < buffer_size) {
-      if (buffer_)
-        UnmapOrDie(buffer_, buffer_size_);
-      buffer_ = MmapOrDieOnFatalError(buffer_size, "ReleaseToOSPageCounters");
-      buffer_size_ = buffer_size;
-    } else {
-      internal_memset(buffer_, 0, buffer_size);
-    }
-    return buffer_;
+  u64 *MapPackedCounterArrayBuffer(uptr count) {
+    buffer_.clear();
+    buffer_.resize(count);
+    return buffer_.data();
   }
 
   // Releases [from, to) range of pages back to OS.
-  void ReleasePageRangeToOS(CompactPtrT from, CompactPtrT to, uptr class_id) {
+  void ReleasePageRangeToOS(uptr class_id, CompactPtrT from, CompactPtrT to) {
     const uptr region_base = allocator_.GetRegionBeginBySizeClass(class_id);
     const uptr from_page = allocator_.CompactPtrToPointer(region_base, from);
     const uptr to_page = allocator_.CompactPtrToPointer(region_base, to);
@@ -92,8 +77,7 @@ class MemoryMapper {
   const Allocator &allocator_;
   uptr released_ranges_count_ = 0;
   uptr released_bytes_ = 0;
-  void *buffer_ = nullptr;
-  uptr buffer_size_ = 0;
+  InternalMmapVector<u64> buffer_;
 };
 
 template <class Params>
@@ -419,11 +403,11 @@ class SizeClassAllocator64 {
   // For the performance sake, none of the accessors check the validity of the
   // arguments, it is assumed that index is always in [0, n) range and the value
   // is not incremented past max_value.
-  template <typename MemoryMapper>
   class PackedCounterArray {
    public:
+    template <typename MemoryMapper>
     PackedCounterArray(u64 num_counters, u64 max_value, MemoryMapper *mapper)
-        : n(num_counters), memory_mapper(mapper) {
+        : n(num_counters) {
       CHECK_GT(num_counters, 0);
       CHECK_GT(max_value, 0);
       constexpr u64 kMaxCounterBits = sizeof(*buffer) * 8ULL;
@@ -440,11 +424,8 @@ class SizeClassAllocator64 {
       packing_ratio_log = Log2(packing_ratio);
       bit_offset_mask = packing_ratio - 1;
 
-      buffer_size =
-          (RoundUpTo(n, 1ULL << packing_ratio_log) >> packing_ratio_log) *
-          sizeof(*buffer);
-      buffer = reinterpret_cast<u64*>(
-          memory_mapper->MapPackedCounterArrayBuffer(buffer_size));
+      buffer = mapper->MapPackedCounterArrayBuffer(
+          RoundUpTo(n, 1ULL << packing_ratio_log) >> packing_ratio_log);
     }
 
     bool IsAllocated() const {
@@ -481,22 +462,16 @@ class SizeClassAllocator64 {
     u64 counter_mask;
     u64 packing_ratio_log;
     u64 bit_offset_mask;
-
-    MemoryMapper *const memory_mapper;
-    u64 buffer_size;
     u64* buffer;
   };
 
   template <class MemoryMapperT>
   class FreePagesRangeTracker {
    public:
-    explicit FreePagesRangeTracker(MemoryMapperT *mapper, uptr class_id)
+    FreePagesRangeTracker(MemoryMapperT *mapper, uptr class_id)
         : memory_mapper(mapper),
           class_id(class_id),
-          page_size_scaled_log(Log2(GetPageSizeCached() >> kCompactPtrScale)),
-          in_the_range(false),
-          current_page(0),
-          current_range_start_page(0) {}
+          page_size_scaled_log(Log2(GetPageSizeCached() >> kCompactPtrScale)) {}
 
     void NextPage(bool freed) {
       if (freed) {
@@ -524,12 +499,12 @@ class SizeClassAllocator64 {
       }
     }
 
-    MemoryMapperT *const memory_mapper;
-    const uptr class_id;
-    const uptr page_size_scaled_log;
-    bool in_the_range;
-    uptr current_page;
-    uptr current_range_start_page;
+    MemoryMapperT *const memory_mapper = nullptr;
+    const uptr class_id = 0;
+    const uptr page_size_scaled_log = 0;
+    bool in_the_range = false;
+    uptr current_page = 0;
+    uptr current_range_start_page = 0;
   };
 
   // Iterates over the free_array to identify memory pages containing freed
@@ -577,8 +552,8 @@ class SizeClassAllocator64 {
       UNREACHABLE("All chunk_size/page_size ratios must be handled.");
     }
 
-    PackedCounterArray<MemoryMapper> counters(
-        allocated_pages_count, full_pages_chunk_count_max, memory_mapper);
+    PackedCounterArray counters(allocated_pages_count,
+                                full_pages_chunk_count_max, memory_mapper);
     if (!counters.IsAllocated())
       return;
 

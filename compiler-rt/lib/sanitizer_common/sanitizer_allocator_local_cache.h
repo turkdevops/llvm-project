@@ -54,7 +54,7 @@ struct SizeClassAllocator64LocalCache {
     PerClass *c = &per_class_[class_id];
     InitCache(c);
     if (UNLIKELY(c->count == c->max_count))
-      Drain(c, allocator, class_id);
+      DrainHalfMax(c, allocator, class_id);
     CompactPtrT chunk = allocator->PointerToCompactPtr(
         allocator->GetRegionBeginBySizeClass(class_id),
         reinterpret_cast<uptr>(p));
@@ -107,8 +107,8 @@ struct SizeClassAllocator64LocalCache {
     return true;
   }
 
-  NOINLINE void Drain(PerClass *c, SizeClassAllocator *allocator,
-                      uptr class_id) {
+  NOINLINE void DrainHalfMax(PerClass *c, SizeClassAllocator *allocator,
+                             uptr class_id) {
     MemoryMapperT memory_mapper(*allocator);
     Drain(&memory_mapper, c, allocator, class_id, c->max_count / 2);
   }
