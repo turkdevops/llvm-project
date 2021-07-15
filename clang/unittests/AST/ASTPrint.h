@@ -64,13 +64,20 @@ public:
   unsigned getNumFoundNodes() const { return NumFoundNodes; }
 };
 
+template <typename NodeType> bool NoNodeFilter(const NodeType *) {
+  return true;
+}
+
 template <typename NodeType, typename Matcher>
-::testing::AssertionResult PrintedNodeMatches(
-    StringRef Code, const std::vector<std::string> &Args,
-    const Matcher &NodeMatch, StringRef ExpectedPrinted, StringRef FileName,
-    NodePrinter<NodeType> Printer,
-    PrintingPolicyAdjuster PolicyAdjuster = nullptr, bool AllowError = false,
-    NodeFilter<NodeType> Filter = [](const NodeType *) { return true; }) {
+::testing::AssertionResult
+PrintedNodeMatches(StringRef Code, const std::vector<std::string> &Args,
+                   const Matcher &NodeMatch, StringRef ExpectedPrinted,
+                   StringRef FileName, NodePrinter<NodeType> Printer,
+                   PrintingPolicyAdjuster PolicyAdjuster = nullptr,
+                   bool AllowError = false,
+                   // Would like to use a lambda for the default value, but that
+                   // trips gcc 7 up.
+                   NodeFilter<NodeType> Filter = &NoNodeFilter<NodeType>) {
 
   PrintMatch<NodeType> Callback(Printer, PolicyAdjuster, Filter);
   ast_matchers::MatchFinder Finder;
