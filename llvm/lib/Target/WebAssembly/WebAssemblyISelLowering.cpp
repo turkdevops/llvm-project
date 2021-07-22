@@ -212,6 +212,9 @@ WebAssemblyTargetLowering::WebAssemblyTargetLowering(
       for (auto T : {MVT::v16i8, MVT::v8i16, MVT::v4i32})
         setOperationAction(Op, T, Legal);
 
+    // And we have popcnt for i8x16
+    setOperationAction(ISD::CTPOP, MVT::v16i8, Legal);
+
     // Expand float operations supported for scalars but not SIMD
     for (auto Op : {ISD::FCOPYSIGN, ISD::FLOG, ISD::FLOG2, ISD::FLOG10,
                     ISD::FEXP, ISD::FEXP2, ISD::FRINT})
@@ -757,15 +760,6 @@ bool WebAssemblyTargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
     Info.offset = 0;
     Info.align = Align(8);
     Info.flags = MachineMemOperand::MOVolatile | MachineMemOperand::MOLoad;
-    return true;
-  case Intrinsic::wasm_load32_zero:
-  case Intrinsic::wasm_load64_zero:
-    Info.opc = ISD::INTRINSIC_W_CHAIN;
-    Info.memVT = Intrinsic == Intrinsic::wasm_load32_zero ? MVT::i32 : MVT::i64;
-    Info.ptrVal = I.getArgOperand(0);
-    Info.offset = 0;
-    Info.align = Align(1);
-    Info.flags = MachineMemOperand::MOLoad;
     return true;
   default:
     return false;

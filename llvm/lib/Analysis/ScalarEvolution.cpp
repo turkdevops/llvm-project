@@ -533,8 +533,7 @@ bool SCEVUnknown::isSizeOf(Type *&AllocTy) const {
             CE->getNumOperands() == 2)
           if (ConstantInt *CI = dyn_cast<ConstantInt>(CE->getOperand(1)))
             if (CI->isOne()) {
-              AllocTy = cast<PointerType>(CE->getOperand(0)->getType())
-                                 ->getElementType();
+              AllocTy = cast<GEPOperator>(CE)->getSourceElementType();
               return true;
             }
 
@@ -547,8 +546,7 @@ bool SCEVUnknown::isAlignOf(Type *&AllocTy) const {
       if (ConstantExpr *CE = dyn_cast<ConstantExpr>(VCE->getOperand(0)))
         if (CE->getOpcode() == Instruction::GetElementPtr &&
             CE->getOperand(0)->isNullValue()) {
-          Type *Ty =
-            cast<PointerType>(CE->getOperand(0)->getType())->getElementType();
+          Type *Ty = cast<GEPOperator>(CE)->getSourceElementType();
           if (StructType *STy = dyn_cast<StructType>(Ty))
             if (!STy->isPacked() &&
                 CE->getNumOperands() == 3 &&
@@ -574,8 +572,7 @@ bool SCEVUnknown::isOffsetOf(Type *&CTy, Constant *&FieldNo) const {
             CE->getNumOperands() == 3 &&
             CE->getOperand(0)->isNullValue() &&
             CE->getOperand(1)->isNullValue()) {
-          Type *Ty =
-            cast<PointerType>(CE->getOperand(0)->getType())->getElementType();
+          Type *Ty = cast<GEPOperator>(CE)->getSourceElementType();
           // Ignore vector types here so that ScalarEvolutionExpander doesn't
           // emit getelementptrs that index into vectors.
           if (Ty->isStructTy() || Ty->isArrayTy()) {
@@ -8795,13 +8792,12 @@ static Constant *BuildConstantFromSCEV(const SCEV *V) {
         if (C2->getType()->isPointerTy())
           return nullptr;
 
-        if (PointerType *PTy = dyn_cast<PointerType>(C->getType())) {
-          if (PTy->getElementType()->isStructTy())
-            C2 = ConstantExpr::getIntegerCast(
-                C2, Type::getInt32Ty(C->getContext()), true);
-          C = ConstantExpr::getGetElementPtr(PTy->getElementType(), C, C2);
-        } else
+        if (C->getType()->isPointerTy()) {
+          C = ConstantExpr::getGetElementPtr(Type::getInt8Ty(C->getContext()),
+                                             C, C2);
+        } else {
           C = ConstantExpr::getAdd(C, C2);
+        }
       }
       return C;
     }
@@ -11533,9 +11529,11 @@ const SCEV *ScalarEvolution::computeMaxBECountForLT(const SCEV *Start,
                                                     const SCEV *End,
                                                     unsigned BitWidth,
                                                     bool IsSigned) {
+  // The logic in this function assumes we can represent a positive stride.
+  // If we can't, the backedge-taken count must be zero.
+  if (IsSigned && BitWidth == 1)
+    return getZero(Stride->getType());
 
-  assert(!isKnownNonPositive(Stride) &&
-         "Stride is expected strictly positive!");
   // Calculate the maximum backedge count based on the range of values
   // permitted by Start, End, and Stride.
   const SCEV *MaxBECount;
@@ -11545,13 +11543,11 @@ const SCEV *ScalarEvolution::computeMaxBECountForLT(const SCEV *Start,
   APInt StrideForMaxBECount =
       IsSigned ? getSignedRangeMin(Stride) : getUnsignedRangeMin(Stride);
 
-  // We already know that the stride is positive, so we paper over conservatism
-  // in our range computation by forcing StrideForMaxBECount to be at least one.
-  // In theory this is unnecessary, but we expect MaxBECount to be a
-  // SCEVConstant, and (udiv <constant> 0) is not constant folded by SCEV (there
-  // is nothing to constant fold it to).
-  APInt One(BitWidth, 1, IsSigned);
-  StrideForMaxBECount = APIntOps::smax(One, StrideForMaxBECount);
+  // We assume either the stride is positive, or the backedge-taken count
+  // is zero. So force StrideForMaxBECount to be at least one.
+  APInt One(BitWidth, 1);
+  StrideForMaxBECount = IsSigned ? APIntOps::smax(One, StrideForMaxBECount)
+                                 : APIntOps::umax(One, StrideForMaxBECount);
 
   APInt MaxValue = IsSigned ? APInt::getSignedMaxValue(BitWidth)
                             : APInt::getMaxValue(BitWidth);
@@ -11563,6 +11559,10 @@ const SCEV *ScalarEvolution::computeMaxBECountForLT(const SCEV *Start,
   // taken count.
   APInt MaxEnd = IsSigned ? APIntOps::smin(getSignedRangeMax(End), Limit)
                           : APIntOps::umin(getUnsignedRangeMax(End), Limit);
+
+  // MaxBECount = ceil((max(MaxEnd, MinStart) - MinStart) / Stride)
+  MaxEnd = IsSigned ? APIntOps::smax(MaxEnd, MinStart)
+                    : APIntOps::umax(MaxEnd, MinStart);
 
   MaxBECount = getUDivCeilSCEV(getConstant(MaxEnd - MinStart) /* Delta */,
                                getConstant(StrideForMaxBECount) /* Step */);
@@ -11591,6 +11591,16 @@ ScalarEvolution::howManyLessThans(const SCEV *LHS, const SCEV *RHS,
   if (!IV || IV->getLoop() != L || !IV->isAffine())
     return getCouldNotCompute();
 
+  // A precondition of this method is that the condition being analyzed
+  // reaches an exiting branch which dominates the latch.  Given that, we can
+  // assume that an increment which violates the nowrap specification and
+  // produces poison must cause undefined behavior when the resulting poison
+  // value is branched upon and thus we can conclude that the backedge is
+  // taken no more often than would be required to produce that poison value.
+  // Note that a well defined loop can exit on the iteration which violates
+  // the nowrap specification if there is another exit (either explicit or
+  // implicit/exceptional) which causes the loop to execute before the
+  // exiting instruction we're analyzing would trigger UB.
   auto WrapType = IsSigned ? SCEV::FlagNSW : SCEV::FlagNUW;
   bool NoWrap = ControlsExit && IV->getNoWrapFlags(WrapType);
   ICmpInst::Predicate Cond = IsSigned ? ICmpInst::ICMP_SLT : ICmpInst::ICMP_ULT;
@@ -12587,20 +12597,12 @@ bool ScalarEvolution::getIndexExpressionsFromGEP(
   assert(Subscripts.empty() && Sizes.empty() &&
          "Expected output lists to be empty on entry to this function.");
   assert(GEP && "getIndexExpressionsFromGEP called with a null GEP");
-  Type *Ty = GEP->getPointerOperandType();
+  Type *Ty = nullptr;
   bool DroppedFirstDim = false;
   for (unsigned i = 1; i < GEP->getNumOperands(); i++) {
     const SCEV *Expr = getSCEV(GEP->getOperand(i));
     if (i == 1) {
-      if (auto *PtrTy = dyn_cast<PointerType>(Ty)) {
-        Ty = PtrTy->getElementType();
-      } else if (auto *ArrayTy = dyn_cast<ArrayType>(Ty)) {
-        Ty = ArrayTy->getElementType();
-      } else {
-        Subscripts.clear();
-        Sizes.clear();
-        return false;
-      }
+      Ty = GEP->getSourceElementType();
       if (auto *Const = dyn_cast<SCEVConstant>(Expr))
         if (Const->getValue()->isZero()) {
           DroppedFirstDim = true;

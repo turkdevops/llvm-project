@@ -31,6 +31,7 @@
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/NoFolder.h"
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/IR/Verifier.h"
@@ -155,6 +156,11 @@ static cl::opt<bool>
                    cl::desc("Print Attributor's internal call graph"),
                    cl::init(false));
 
+static cl::opt<bool> SimplifyAllLoads("attributor-simplify-all-loads",
+                                      cl::Hidden,
+                                      cl::desc("Try to simplify all loads."),
+                                      cl::init(true));
+
 /// Logic operators for the change status enum class.
 ///
 ///{
@@ -173,6 +179,37 @@ ChangeStatus &llvm::operator&=(ChangeStatus &L, ChangeStatus R) {
   return L;
 }
 ///}
+
+bool AA::isDynamicallyUnique(Attributor &A, const AbstractAttribute &QueryingAA,
+                             const Value &V) {
+  if (auto *C = dyn_cast<Constant>(&V))
+    return !C->isThreadDependent();
+  // TODO: Inspect and cache more complex instructions.
+  if (auto *CB = dyn_cast<CallBase>(&V))
+    return CB->getNumOperands() == 0 && !CB->mayHaveSideEffects() &&
+           !CB->mayReadFromMemory();
+  const Function *Scope = nullptr;
+  if (auto *I = dyn_cast<Instruction>(&V))
+    Scope = I->getFunction();
+  if (auto *A = dyn_cast<Argument>(&V))
+    Scope = A->getParent();
+  if (!Scope)
+    return false;
+  auto &NoRecurseAA = A.getAAFor<AANoRecurse>(
+      QueryingAA, IRPosition::function(*Scope), DepClassTy::OPTIONAL);
+  return NoRecurseAA.isAssumedNoRecurse();
+}
+
+Constant *AA::getInitialValueForObj(Value &Obj, Type &Ty) {
+  if (isa<AllocaInst>(Obj))
+    return UndefValue::get(&Ty);
+  auto *GV = dyn_cast<GlobalVariable>(&Obj);
+  if (!GV || !GV->hasLocalLinkage())
+    return nullptr;
+  if (!GV->hasInitializer())
+    return UndefValue::get(&Ty);
+  return dyn_cast_or_null<Constant>(getWithType(*GV->getInitializer(), Ty));
+}
 
 bool AA::isValidInScope(const Value &V, const Function *Scope) {
   if (isa<Constant>(V))
@@ -632,19 +669,19 @@ void IRPosition::verify() {
 }
 
 Optional<Constant *>
-Attributor::getAssumedConstant(const Value &V, const AbstractAttribute &AA,
+Attributor::getAssumedConstant(const IRPosition &IRP,
+                               const AbstractAttribute &AA,
                                bool &UsedAssumedInformation) {
   // First check all callbacks provided by outside AAs. If any of them returns
   // a non-null value that is different from the associated value, or None, we
   // assume it's simpliied.
-  IRPosition IRP = IRPosition::value(V, AA.getCallBaseContext());
   for (auto &CB : SimplificationCallbacks[IRP]) {
     Optional<Value *> SimplifiedV = CB(IRP, &AA, UsedAssumedInformation);
     if (!SimplifiedV.hasValue())
       return llvm::None;
-    if (*SimplifiedV && *SimplifiedV != &IRP.getAssociatedValue() &&
-        isa<Constant>(*SimplifiedV))
+    if (isa_and_nonnull<Constant>(*SimplifiedV))
       return cast<Constant>(*SimplifiedV);
+    return nullptr;
   }
   const auto &ValueSimplifyAA =
       getAAFor<AAValueSimplify>(AA, IRP, DepClassTy::NONE);
@@ -658,13 +695,12 @@ Attributor::getAssumedConstant(const Value &V, const AbstractAttribute &AA,
   }
   if (isa_and_nonnull<UndefValue>(SimplifiedV.getValue())) {
     recordDependence(ValueSimplifyAA, AA, DepClassTy::OPTIONAL);
-    return UndefValue::get(V.getType());
+    return UndefValue::get(IRP.getAssociatedType());
   }
   Constant *CI = dyn_cast_or_null<Constant>(SimplifiedV.getValue());
-  if (CI && CI->getType() != V.getType()) {
-    // TODO: Check for a save conversion.
-    return nullptr;
-  }
+  if (CI)
+    CI = dyn_cast_or_null<Constant>(
+        AA::getWithType(*CI, *IRP.getAssociatedType()));
   if (CI)
     recordDependence(ValueSimplifyAA, AA, DepClassTy::OPTIONAL);
   return CI;
@@ -679,9 +715,7 @@ Attributor::getAssumedSimplified(const IRPosition &IRP,
   // assume it's simpliied.
   for (auto &CB : SimplificationCallbacks[IRP]) {
     Optional<Value *> SimplifiedV = CB(IRP, AA, UsedAssumedInformation);
-    if (!SimplifiedV.hasValue() ||
-        (*SimplifiedV && *SimplifiedV != &IRP.getAssociatedValue()))
-      return SimplifiedV;
+    return SimplifiedV;
   }
 
   // If no high-level/outside simplification occured, use AAValueSimplify.
@@ -715,10 +749,11 @@ Optional<Value *> Attributor::translateArgumentToCallSiteContent(
   if (*V == nullptr || isa<Constant>(*V))
     return V;
   if (auto *Arg = dyn_cast<Argument>(*V))
-    if (!Arg->hasPointeeInMemoryValueAttr())
-      return getAssumedSimplified(
-          IRPosition::callsite_argument(CB, Arg->getArgNo()), AA,
-          UsedAssumedInformation);
+    if (CB.getCalledFunction() == Arg->getParent())
+      if (!Arg->hasPointeeInMemoryValueAttr())
+        return getAssumedSimplified(
+            IRPosition::callsite_argument(CB, Arg->getArgNo()), AA,
+            UsedAssumedInformation);
   return nullptr;
 }
 
@@ -783,6 +818,9 @@ bool Attributor::isAssumedDead(const Instruction &I,
                                bool CheckBBLivenessOnly, DepClassTy DepClass) {
   const IRPosition::CallBaseContext *CBCtx =
       QueryingAA ? QueryingAA->getCallBaseContext() : nullptr;
+
+  if (ManifestAddedBlocks.contains(I.getParent()))
+    return false;
 
   if (!FnLivenessAA)
     FnLivenessAA =
@@ -860,7 +898,8 @@ bool Attributor::isAssumedDead(const IRPosition &IRP,
 
 bool Attributor::checkForAllUses(function_ref<bool(const Use &, bool &)> Pred,
                                  const AbstractAttribute &QueryingAA,
-                                 const Value &V, DepClassTy LivenessDepClass) {
+                                 const Value &V, bool CheckBBLivenessOnly,
+                                 DepClassTy LivenessDepClass) {
 
   // Check the trivial case first as it catches void values.
   if (V.use_empty())
@@ -890,7 +929,7 @@ bool Attributor::checkForAllUses(function_ref<bool(const Use &, bool &)> Pred,
                       << *U->getUser() << "\n");
     bool UsedAssumedInformation = false;
     if (isAssumedDead(*U, &QueryingAA, LivenessAA, UsedAssumedInformation,
-                      /* CheckBBLivenessOnly */ false, LivenessDepClass)) {
+                      CheckBBLivenessOnly, LivenessDepClass)) {
       LLVM_DEBUG(dbgs() << "[Attributor] Dead use, skip!\n");
       continue;
     }
@@ -1422,7 +1461,9 @@ ChangeStatus Attributor::cleanupIR() {
                     << ToBeDeletedBlocks.size() << " blocks and "
                     << ToBeDeletedInsts.size() << " instructions and "
                     << ToBeChangedValues.size() << " values and "
-                    << ToBeChangedUses.size() << " uses\n");
+                    << ToBeChangedUses.size() << " uses. "
+                    << "Preserve manifest added " << ManifestAddedBlocks.size()
+                    << " blocks\n");
 
   SmallVector<WeakTrackingVH, 32> DeadInsts;
   SmallVector<Instruction *, 32> TerminatorsToFold;
@@ -1549,9 +1590,12 @@ ChangeStatus Attributor::cleanupIR() {
 
   for (auto &V : ToBeDeletedInsts) {
     if (Instruction *I = dyn_cast_or_null<Instruction>(V)) {
-      if (auto *CB = dyn_cast<CallBase>(I))
-        if (CB->isMustTailCall() && !isRunOn(*I->getFunction()))
+      if (auto *CB = dyn_cast<CallBase>(I)) {
+        if (!isRunOn(*I->getFunction()))
           continue;
+        if (!isa<IntrinsicInst>(CB))
+          CGUpdater.removeCallSite(*CB);
+      }
       I->dropDroppableUses();
       CGModifiedFunctions.insert(I->getFunction());
       if (!I->getType()->isVoidTy())
@@ -1583,6 +1627,9 @@ ChangeStatus Attributor::cleanupIR() {
       assert(isRunOn(*BB->getParent()) &&
              "Cannot delete a block outside the current SCC!");
       CGModifiedFunctions.insert(BB->getParent());
+      // Do not delete BBs added during manifests of AAs.
+      if (ManifestAddedBlocks.contains(BB))
+        continue;
       ToBeDeletedBBs.push_back(BB);
     }
     // Actually we do not delete the blocks but squash them into a single
@@ -2436,10 +2483,12 @@ void Attributor::identifyDefaultAbstractAttributes(Function &F) {
   assert(Success && "Expected the check call to be successful!");
 
   auto LoadStorePred = [&](Instruction &I) -> bool {
-    if (isa<LoadInst>(I))
+    if (isa<LoadInst>(I)) {
       getOrCreateAAFor<AAAlign>(
           IRPosition::value(*cast<LoadInst>(I).getPointerOperand()));
-    else
+      if (SimplifyAllLoads)
+        getOrCreateAAFor<AAValueSimplify>(IRPosition::value(I));
+    } else
       getOrCreateAAFor<AAAlign>(
           IRPosition::value(*cast<StoreInst>(I).getPointerOperand()));
     return true;
@@ -2552,6 +2601,14 @@ void AbstractAttribute::printWithDeps(raw_ostream &OS) const {
   }
 
   OS << '\n';
+}
+
+raw_ostream &llvm::operator<<(raw_ostream &OS,
+                              const AAPointerInfo::Access &Acc) {
+  OS << " [" << Acc.getKind() << "] " << *Acc.getRemoteInst();
+  if (Acc.getLocalInst() != Acc.getRemoteInst())
+    OS << " via " << *Acc.getLocalInst() << "\n";
+  return OS;
 }
 ///}
 

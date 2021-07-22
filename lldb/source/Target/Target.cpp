@@ -1159,9 +1159,7 @@ bool Target::RemoveAllWatchpoints(bool end_to_end) {
   if (!ProcessIsValid())
     return false;
 
-  size_t num_watchpoints = m_watchpoint_list.GetSize();
-  for (size_t i = 0; i < num_watchpoints; ++i) {
-    WatchpointSP wp_sp = m_watchpoint_list.GetByIndex(i);
+  for (WatchpointSP wp_sp : m_watchpoint_list.Watchpoints()) {
     if (!wp_sp)
       return false;
 
@@ -1190,9 +1188,7 @@ bool Target::DisableAllWatchpoints(bool end_to_end) {
   if (!ProcessIsValid())
     return false;
 
-  size_t num_watchpoints = m_watchpoint_list.GetSize();
-  for (size_t i = 0; i < num_watchpoints; ++i) {
-    WatchpointSP wp_sp = m_watchpoint_list.GetByIndex(i);
+  for (WatchpointSP wp_sp : m_watchpoint_list.Watchpoints()) {
     if (!wp_sp)
       return false;
 
@@ -1219,9 +1215,7 @@ bool Target::EnableAllWatchpoints(bool end_to_end) {
   if (!ProcessIsValid())
     return false;
 
-  size_t num_watchpoints = m_watchpoint_list.GetSize();
-  for (size_t i = 0; i < num_watchpoints; ++i) {
-    WatchpointSP wp_sp = m_watchpoint_list.GetByIndex(i);
+  for (WatchpointSP wp_sp : m_watchpoint_list.Watchpoints()) {
     if (!wp_sp)
       return false;
 
@@ -1237,9 +1231,7 @@ bool Target::ClearAllWatchpointHitCounts() {
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_WATCHPOINTS));
   LLDB_LOGF(log, "Target::%s\n", __FUNCTION__);
 
-  size_t num_watchpoints = m_watchpoint_list.GetSize();
-  for (size_t i = 0; i < num_watchpoints; ++i) {
-    WatchpointSP wp_sp = m_watchpoint_list.GetByIndex(i);
+  for (WatchpointSP wp_sp : m_watchpoint_list.Watchpoints()) {
     if (!wp_sp)
       return false;
 
@@ -1253,9 +1245,7 @@ bool Target::ClearAllWatchpointHistoricValues() {
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_WATCHPOINTS));
   LLDB_LOGF(log, "Target::%s\n", __FUNCTION__);
 
-  size_t num_watchpoints = m_watchpoint_list.GetSize();
-  for (size_t i = 0; i < num_watchpoints; ++i) {
-    WatchpointSP wp_sp = m_watchpoint_list.GetByIndex(i);
+  for (WatchpointSP wp_sp : m_watchpoint_list.Watchpoints()) {
     if (!wp_sp)
       return false;
 
@@ -1273,9 +1263,7 @@ bool Target::IgnoreAllWatchpoints(uint32_t ignore_count) {
   if (!ProcessIsValid())
     return false;
 
-  size_t num_watchpoints = m_watchpoint_list.GetSize();
-  for (size_t i = 0; i < num_watchpoints; ++i) {
-    WatchpointSP wp_sp = m_watchpoint_list.GetByIndex(i);
+  for (WatchpointSP wp_sp : m_watchpoint_list.Watchpoints()) {
     if (!wp_sp)
       return false;
 
@@ -2986,7 +2974,7 @@ Status Target::Launch(ProcessLaunchInfo &launch_info, Stream *stream) {
   // If we're not already connected to the process, and if we have a platform
   // that can launch a process for debugging, go ahead and do that here.
   if (state != eStateConnected && platform_sp &&
-      platform_sp->CanDebugProcess()) {
+      platform_sp->CanDebugProcess() && !launch_info.IsScriptedProcess()) {
     LLDB_LOGF(log, "Target::%s asking the platform to debug the process",
               __FUNCTION__);
 

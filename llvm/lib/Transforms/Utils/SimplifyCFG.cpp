@@ -2228,6 +2228,7 @@ static Value *isSafeToSpeculateStore(Instruction *I, BasicBlock *BrBB,
     return nullptr;
 
   Value *StorePtr = StoreToHoist->getPointerOperand();
+  Type *StoreTy = StoreToHoist->getValueOperand()->getType();
 
   // Look for a store to the same pointer in BrBB.
   unsigned MaxNumInstToLookAt = 9;
@@ -2244,7 +2245,8 @@ static Value *isSafeToSpeculateStore(Instruction *I, BasicBlock *BrBB,
 
     if (auto *SI = dyn_cast<StoreInst>(&CurI)) {
       // Found the previous store make sure it stores to the same location.
-      if (SI->getPointerOperand() == StorePtr)
+      if (SI->getPointerOperand() == StorePtr &&
+          SI->getValueOperand()->getType() == StoreTy)
         // Found the previous store, return its value operand.
         return SI->getValueOperand();
       return nullptr; // Unknown store.
@@ -3192,9 +3194,6 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, DomTreeUpdater *DTU,
     return false;
 
   BasicBlock *BB = BI->getParent();
-
-  bool Changed = false;
-
   TargetTransformInfo::TargetCostKind CostKind =
     BB->getParent()->hasMinSize() ? TargetTransformInfo::TCK_CodeSize
                                   : TargetTransformInfo::TCK_SizeAndLatency;
@@ -3203,20 +3202,20 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, DomTreeUpdater *DTU,
 
   if (!Cond || (!isa<CmpInst>(Cond) && !isa<BinaryOperator>(Cond)) ||
       Cond->getParent() != BB || !Cond->hasOneUse())
-    return Changed;
+    return false;
 
   // Cond is known to be a compare or binary operator.  Check to make sure that
   // neither operand is a potentially-trapping constant expression.
   if (ConstantExpr *CE = dyn_cast<ConstantExpr>(Cond->getOperand(0)))
     if (CE->canTrap())
-      return Changed;
+      return false;
   if (ConstantExpr *CE = dyn_cast<ConstantExpr>(Cond->getOperand(1)))
     if (CE->canTrap())
-      return Changed;
+      return false;
 
   // Finally, don't infinitely unroll conditional loops.
   if (is_contained(successors(BB), BB))
-    return Changed;
+    return false;
 
   // With which predecessors will we want to deal with?
   SmallVector<BasicBlock *, 8> Preds;
@@ -3257,7 +3256,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, DomTreeUpdater *DTU,
   // If there aren't any predecessors into which we can fold,
   // don't bother checking the cost.
   if (Preds.empty())
-    return Changed;
+    return false;
 
   // Only allow this transformation if computing the condition doesn't involve
   // too many instructions and these involved instructions can be executed
@@ -3276,14 +3275,14 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, DomTreeUpdater *DTU,
       continue;
     // I must be safe to execute unconditionally.
     if (!isSafeToSpeculativelyExecute(&I))
-      return Changed;
+      return false;
 
     // Account for the cost of duplicating this instruction into each
     // predecessor.
     NumBonusInsts += PredCount;
     // Early exits once we reach the limit.
     if (NumBonusInsts > BonusInstThreshold)
-      return Changed;
+      return false;
   }
 
   // Ok, we have the budget. Perform the transformation.
@@ -3291,7 +3290,7 @@ bool llvm::FoldBranchToCommonDest(BranchInst *BI, DomTreeUpdater *DTU,
     auto *PBI = cast<BranchInst>(PredBlock->getTerminator());
     return performBranchToCommonDestFolding(BI, PBI, DTU, MSSAU, TTI);
   }
-  return Changed;
+  return false;
 }
 
 // If there is only one store in BB1 and BB2, return it, otherwise return

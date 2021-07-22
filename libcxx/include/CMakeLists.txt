@@ -133,6 +133,7 @@ set(files
   __iterator/access.h
   __iterator/advance.h
   __iterator/back_insert_iterator.h
+  __iterator/common_iterator.h
   __iterator/concepts.h
   __iterator/data.h
   __iterator/default_sentinel.h
@@ -185,6 +186,7 @@ set(files
   __ranges/all.h
   __ranges/concepts.h
   __ranges/copyable_box.h
+  __ranges/dangling.h
   __ranges/data.h
   __ranges/drop_view.h
   __ranges/empty_view.h
