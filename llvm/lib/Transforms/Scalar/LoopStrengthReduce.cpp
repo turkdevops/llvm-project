@@ -4538,7 +4538,7 @@ void LSRInstance::NarrowSearchSpaceByDetectingSupersets() {
 /// When there are many registers for expressions like A, A+1, A+2, etc.,
 /// allocate a single register for them.
 void LSRInstance::NarrowSearchSpaceByCollapsingUnrolledCode() {
-  if (EstimateSearchSpaceComplexity() < ComplexityLimit) 
+  if (EstimateSearchSpaceComplexity() < ComplexityLimit)
     return;
 
   LLVM_DEBUG(
