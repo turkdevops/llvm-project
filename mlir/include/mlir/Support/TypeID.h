@@ -145,15 +145,22 @@ TypeID TypeID::get() {
 // different shared libraries and instances of the same class only gets the same
 // TypeID inside a given DSO.
 #define DECLARE_EXPLICIT_TYPE_ID(CLASS_NAME)                                   \
+  namespace mlir {                                                             \
+  namespace detail {                                                           \
   template <>                                                                  \
-  LLVM_EXTERNAL_VISIBILITY mlir::TypeID                                        \
-  mlir::detail::TypeIDExported::get<CLASS_NAME>();
+  LLVM_EXTERNAL_VISIBILITY TypeID TypeIDExported::get<CLASS_NAME>();           \
+  }                                                                            \
+  }
+
 #define DEFINE_EXPLICIT_TYPE_ID(CLASS_NAME)                                    \
+  namespace mlir {                                                             \
+  namespace detail {                                                           \
   template <>                                                                  \
-  LLVM_EXTERNAL_VISIBILITY mlir::TypeID                                        \
-  mlir::detail::TypeIDExported::get<CLASS_NAME>() {                            \
-    static mlir::TypeID::Storage instance;                                     \
-    return mlir::TypeID(&instance);                                            \
+  LLVM_EXTERNAL_VISIBILITY TypeID TypeIDExported::get<CLASS_NAME>() {          \
+    static TypeID::Storage instance;                                           \
+    return TypeID(&instance);                                                  \
+  }                                                                            \
+  }                                                                            \
   }
 
 namespace llvm {
