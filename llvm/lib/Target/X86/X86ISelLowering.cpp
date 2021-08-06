@@ -1962,6 +1962,7 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setLibcallName(RTLIB::SRL_I128, nullptr);
     setLibcallName(RTLIB::SRA_I128, nullptr);
     setLibcallName(RTLIB::MUL_I128, nullptr);
+    setLibcallName(RTLIB::MULO_I128, nullptr);
   }
 
   // Combine sin / cos into _sincos_stret if it is available.
@@ -5386,11 +5387,10 @@ bool X86TargetLowering::isLoadBitCastBeneficial(EVT LoadVT, EVT BitcastVT,
 }
 
 bool X86TargetLowering::canMergeStoresTo(unsigned AddressSpace, EVT MemVT,
-                                         const SelectionDAG &DAG) const {
+                                         const MachineFunction &MF) const {
   // Do not merge to float value size (128 bytes) if no implicit
   // float attribute is set.
-  bool NoFloat = DAG.getMachineFunction().getFunction().hasFnAttribute(
-      Attribute::NoImplicitFloat);
+  bool NoFloat = MF.getFunction().hasFnAttribute(Attribute::NoImplicitFloat);
 
   if (NoFloat) {
     unsigned MaxIntSize = Subtarget.is64Bit() ? 64 : 32;
