@@ -84,7 +84,7 @@ typedef Allocator::AllocatorCache AllocatorCache;
 Allocator *allocator();
 #endif
 
-const u64 kShadowRodata = (u64)-1;  // .rodata shadow marker
+const RawShadow kShadowRodata = (RawShadow)-1;  // .rodata shadow marker
 
 // FastState (from most significant bit):
 //   ignore          : 1
@@ -380,6 +380,7 @@ struct ThreadState {
   // We do not distinguish beteween ignoring reads and writes
   // for better performance.
   int ignore_reads_and_writes;
+  atomic_sint32_t pending_signals;
   int ignore_sync;
   int suppress_reports;
   // Go does not support ignores.
@@ -392,8 +393,8 @@ struct ThreadState {
   uptr *shadow_stack;
   uptr *shadow_stack_end;
   uptr *shadow_stack_pos;
-  u64 *racy_shadow_addr;
-  u64 racy_state[2];
+  RawShadow *racy_shadow_addr;
+  RawShadow racy_state[2];
   MutexSet mset;
   ThreadClock clock;
 #if !SANITIZER_GO
@@ -698,34 +699,44 @@ void MemoryAccessImpl(ThreadState *thr, uptr addr,
     u64 *shadow_mem, Shadow cur);
 void MemoryAccessRange(ThreadState *thr, uptr pc, uptr addr,
     uptr size, bool is_write);
-void MemoryAccessRangeStep(ThreadState *thr, uptr pc, uptr addr,
-    uptr size, uptr step, bool is_write);
-void UnalignedMemoryAccess(ThreadState *thr, uptr pc, uptr addr,
-    int size, bool kAccessIsWrite, bool kIsAtomic);
+void UnalignedMemoryAccess(ThreadState *thr, uptr pc, uptr addr, uptr size,
+                           AccessType typ);
 
 const int kSizeLog1 = 0;
 const int kSizeLog2 = 1;
 const int kSizeLog4 = 2;
 const int kSizeLog8 = 3;
 
-void ALWAYS_INLINE MemoryRead(ThreadState *thr, uptr pc,
-                                     uptr addr, int kAccessSizeLog) {
-  MemoryAccess(thr, pc, addr, kAccessSizeLog, false, false);
-}
-
-void ALWAYS_INLINE MemoryWrite(ThreadState *thr, uptr pc,
-                                      uptr addr, int kAccessSizeLog) {
-  MemoryAccess(thr, pc, addr, kAccessSizeLog, true, false);
-}
-
-void ALWAYS_INLINE MemoryReadAtomic(ThreadState *thr, uptr pc,
-                                           uptr addr, int kAccessSizeLog) {
-  MemoryAccess(thr, pc, addr, kAccessSizeLog, false, true);
-}
-
-void ALWAYS_INLINE MemoryWriteAtomic(ThreadState *thr, uptr pc,
-                                            uptr addr, int kAccessSizeLog) {
-  MemoryAccess(thr, pc, addr, kAccessSizeLog, true, true);
+ALWAYS_INLINE
+void MemoryAccess(ThreadState *thr, uptr pc, uptr addr, uptr size,
+                  AccessType typ) {
+  int size_log;
+  switch (size) {
+    case 1:
+      size_log = kSizeLog1;
+      break;
+    case 2:
+      size_log = kSizeLog2;
+      break;
+    case 4:
+      size_log = kSizeLog4;
+      break;
+    default:
+      DCHECK_EQ(size, 8);
+      size_log = kSizeLog8;
+      break;
+  }
+  bool is_write = !(typ & kAccessRead);
+  bool is_atomic = typ & kAccessAtomic;
+  if (typ & kAccessVptr)
+    thr->is_vptr_access = true;
+  if (typ & kAccessFree)
+    thr->is_freeing = true;
+  MemoryAccess(thr, pc, addr, size_log, is_write, is_atomic);
+  if (typ & kAccessVptr)
+    thr->is_vptr_access = false;
+  if (typ & kAccessFree)
+    thr->is_freeing = false;
 }
 
 void MemoryResetRange(ThreadState *thr, uptr pc, uptr addr, uptr size);
@@ -752,7 +763,7 @@ void ThreadDetach(ThreadState *thr, uptr pc, Tid tid);
 void ThreadFinalize(ThreadState *thr);
 void ThreadSetName(ThreadState *thr, const char *name);
 int ThreadCount(ThreadState *thr);
-void ProcessPendingSignals(ThreadState *thr);
+void ProcessPendingSignalsImpl(ThreadState *thr);
 void ThreadNotJoined(ThreadState *thr, uptr pc, Tid tid, uptr uid);
 
 Processor *ProcCreate();
@@ -857,6 +868,11 @@ void FiberSwitch(ThreadState *thr, uptr pc, ThreadState *fiber, unsigned flags);
 enum FiberSwitchFlags {
   FiberSwitchFlagNoSync = 1 << 0, // __tsan_switch_to_fiber_no_sync
 };
+
+ALWAYS_INLINE void ProcessPendingSignals(ThreadState *thr) {
+  if (UNLIKELY(atomic_load_relaxed(&thr->pending_signals)))
+    ProcessPendingSignalsImpl(thr);
+}
 
 extern bool is_initialized;
 

@@ -14,6 +14,7 @@
 #include "llvm/CodeGen/BasicTTIImpl.h"
 #include "llvm/CodeGen/CostTable.h"
 #include "llvm/CodeGen/TargetLowering.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsAArch64.h"
 #include "llvm/IR/PatternMatch.h"
@@ -220,19 +221,15 @@ AArch64TTIImpl::getIntrinsicInstrCost(const IntrinsicCostAttributes &ICA,
   auto *RetTy = ICA.getReturnType();
   switch (ICA.getID()) {
   case Intrinsic::umin:
-  case Intrinsic::umax: {
-    auto LT = TLI->getTypeLegalizationCost(DL, RetTy);
-    // umin(x,y) -> sub(x,usubsat(x,y))
-    // umax(x,y) -> add(x,usubsat(y,x))
-    if (LT.second == MVT::v2i64)
-      return LT.first * 2;
-    LLVM_FALLTHROUGH;
-  }
+  case Intrinsic::umax:
   case Intrinsic::smin:
   case Intrinsic::smax: {
     static const auto ValidMinMaxTys = {MVT::v8i8,  MVT::v16i8, MVT::v4i16,
                                         MVT::v8i16, MVT::v2i32, MVT::v4i32};
     auto LT = TLI->getTypeLegalizationCost(DL, RetTy);
+    // v2i64 types get converted to cmp+bif hence the cost of 2
+    if (LT.second == MVT::v2i64)
+      return LT.first * 2;
     if (any_of(ValidMinMaxTys, [&LT](MVT M) { return M == LT.second; }))
       return LT.first;
     break;
@@ -1705,9 +1702,10 @@ getFalkorUnrollingPreferences(Loop *L, ScalarEvolution &SE,
 }
 
 void AArch64TTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
-                                             TTI::UnrollingPreferences &UP) {
+                                             TTI::UnrollingPreferences &UP,
+                                             OptimizationRemarkEmitter *ORE) {
   // Enable partial unrolling and runtime unrolling.
-  BaseT::getUnrollingPreferences(L, SE, UP);
+  BaseT::getUnrollingPreferences(L, SE, UP, ORE);
 
   // For inner loop, it is more likely to be a hot one, and the runtime check
   // can be promoted out from LICM pass, so the overhead is less, let's try
@@ -1902,23 +1900,23 @@ InstructionCost
 AArch64TTIImpl::getMinMaxReductionCost(VectorType *Ty, VectorType *CondTy,
                                        bool IsUnsigned,
                                        TTI::TargetCostKind CostKind) {
-  if (!isa<ScalableVectorType>(Ty))
-    return BaseT::getMinMaxReductionCost(Ty, CondTy, IsUnsigned, CostKind);
-  assert((isa<ScalableVectorType>(Ty) && isa<ScalableVectorType>(CondTy)) &&
-         "Both vector needs to be scalable");
-
   std::pair<InstructionCost, MVT> LT = TLI->getTypeLegalizationCost(DL, Ty);
+
+  if (LT.second.getScalarType() == MVT::f16 && !ST->hasFullFP16())
+    return BaseT::getMinMaxReductionCost(Ty, CondTy, IsUnsigned, CostKind);
+
+  assert((isa<ScalableVectorType>(Ty) == isa<ScalableVectorType>(CondTy)) &&
+         "Both vector needs to be equally scalable");
+
   InstructionCost LegalizationCost = 0;
   if (LT.first > 1) {
     Type *LegalVTy = EVT(LT.second).getTypeForEVT(Ty->getContext());
-    unsigned CmpOpcode =
-        Ty->isFPOrFPVectorTy() ? Instruction::FCmp : Instruction::ICmp;
-    LegalizationCost =
-        getCmpSelInstrCost(CmpOpcode, LegalVTy, LegalVTy,
-                           CmpInst::BAD_ICMP_PREDICATE, CostKind) +
-        getCmpSelInstrCost(Instruction::Select, LegalVTy, LegalVTy,
-                           CmpInst::BAD_ICMP_PREDICATE, CostKind);
-    LegalizationCost *= LT.first - 1;
+    unsigned MinMaxOpcode =
+        Ty->isFPOrFPVectorTy()
+            ? Intrinsic::maxnum
+            : (IsUnsigned ? Intrinsic::umin : Intrinsic::smin);
+    IntrinsicCostAttributes Attrs(MinMaxOpcode, LegalVTy, {LegalVTy, LegalVTy});
+    LegalizationCost = getIntrinsicInstrCost(Attrs, CostKind) * (LT.first - 1);
   }
 
   return LegalizationCost + /*Cost of horizontal reduction*/ 2;

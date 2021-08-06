@@ -1256,7 +1256,8 @@ void Clang::AddPreprocessingOptions(Compilation &C, const JobAction &JA,
   // If we are offloading to a target via OpenMP we need to include the
   // openmp_wrappers folder which contains alternative system headers.
   if (JA.isDeviceOffloading(Action::OFK_OpenMP) &&
-      getToolChain().getTriple().isNVPTX()){
+      (getToolChain().getTriple().isNVPTX() ||
+       getToolChain().getTriple().isAMDGCN())) {
     if (!Args.hasArg(options::OPT_nobuiltininc)) {
       // Add openmp_wrappers/* to our system include path.  This lets us wrap
       // standard library headers.
@@ -4738,6 +4739,22 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(std::to_string(FunctionAlignment)));
   }
 
+  // We support -falign-loops=N where N is a power of 2. GCC supports more
+  // forms.
+  if (const Arg *A = Args.getLastArg(options::OPT_falign_loops_EQ)) {
+    unsigned Value = 0;
+    if (StringRef(A->getValue()).getAsInteger(10, Value) || Value > 65536)
+      TC.getDriver().Diag(diag::err_drv_invalid_int_value)
+          << A->getAsString(Args) << A->getValue();
+    else if (Value & Value - 1)
+      TC.getDriver().Diag(diag::err_drv_alignment_not_power_of_two)
+          << A->getAsString(Args) << A->getValue();
+    // Treat =0 as unspecified (use the target preference).
+    if (Value)
+      CmdArgs.push_back(Args.MakeArgString("-falign-loops=" +
+                                           Twine(std::min(Value, 65536u))));
+  }
+
   llvm::Reloc::Model RelocationModel;
   unsigned PICLevel;
   bool IsPIE;
@@ -5710,7 +5727,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_fvisibility_inlines_hidden_static_local_var,
                            options::OPT_fno_visibility_inlines_hidden_static_local_var);
   Args.AddLastArg(CmdArgs, options::OPT_fvisibility_global_new_delete_hidden);
-
+  Args.AddLastArg(CmdArgs, options::OPT_fnew_infallible);
   Args.AddLastArg(CmdArgs, options::OPT_ftlsmodel_EQ);
 
   if (Args.hasFlag(options::OPT_fno_operator_names,
@@ -6192,7 +6209,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // than 19.
   if (!Args.hasFlag(options::OPT_fthreadsafe_statics,
                     options::OPT_fno_threadsafe_statics,
-                    !IsWindowsMSVC || IsMSVC2015Compatible))
+                    !types::isOpenCL(InputType) &&
+                        (!IsWindowsMSVC || IsMSVC2015Compatible)))
     CmdArgs.push_back("-fno-threadsafe-statics");
 
   // -fno-delayed-template-parsing is default, except when targeting MSVC.

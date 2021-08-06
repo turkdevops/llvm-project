@@ -2478,11 +2478,16 @@ unsigned ASTContext::getPreferredTypeAlign(const Type *T) const {
     return ABIAlign;
 
   if (const auto *RT = T->getAs<RecordType>()) {
-    if (TI.AlignIsRequired || RT->getDecl()->isInvalidDecl())
+    const RecordDecl *RD = RT->getDecl();
+
+    // When used as part of a typedef, or together with a 'packed' attribute,
+    // the 'aligned' attribute can be used to decrease alignment.
+    if ((TI.AlignIsRequired && T->getAs<TypedefType>() != nullptr) ||
+        RD->isInvalidDecl())
       return ABIAlign;
 
     unsigned PreferredAlign = static_cast<unsigned>(
-        toBits(getASTRecordLayout(RT->getDecl()).PreferredAlignment));
+        toBits(getASTRecordLayout(RD).PreferredAlignment));
     assert(PreferredAlign >= ABIAlign &&
            "PreferredAlign should be at least as large as ABIAlign.");
     return PreferredAlign;
@@ -6089,9 +6094,11 @@ ASTContext::getCanonicalNestedNameSpecifier(NestedNameSpecifier *NNS) const {
                                     NNS->getAsNamespaceAlias()->getNamespace()
                                                       ->getOriginalNamespace());
 
+  // The difference between TypeSpec and TypeSpecWithTemplate is that the
+  // latter will have the 'template' keyword when printed.
   case NestedNameSpecifier::TypeSpec:
   case NestedNameSpecifier::TypeSpecWithTemplate: {
-    QualType T = getCanonicalType(QualType(NNS->getAsType(), 0));
+    const Type *T = getCanonicalType(NNS->getAsType());
 
     // If we have some kind of dependent-named type (e.g., "typename T::type"),
     // break it apart into its prefix and identifier, then reconsititute those
@@ -6101,14 +6108,16 @@ ASTContext::getCanonicalNestedNameSpecifier(NestedNameSpecifier *NNS) const {
     //   typedef typename T::type T1;
     //   typedef typename T1::type T2;
     if (const auto *DNT = T->getAs<DependentNameType>())
-      return NestedNameSpecifier::Create(*this, DNT->getQualifier(),
-                           const_cast<IdentifierInfo *>(DNT->getIdentifier()));
+      return NestedNameSpecifier::Create(
+          *this, DNT->getQualifier(),
+          const_cast<IdentifierInfo *>(DNT->getIdentifier()));
+    if (const auto *DTST = T->getAs<DependentTemplateSpecializationType>())
+      return NestedNameSpecifier::Create(*this, DTST->getQualifier(), true,
+                                         const_cast<Type *>(T));
 
-    // Otherwise, just canonicalize the type, and force it to be a TypeSpec.
-    // FIXME: Why are TypeSpec and TypeSpecWithTemplate distinct in the
-    // first place?
+    // TODO: Set 'Template' parameter to true for other template types.
     return NestedNameSpecifier::Create(*this, nullptr, false,
-                                       const_cast<Type *>(T.getTypePtr()));
+                                       const_cast<Type *>(T));
   }
 
   case NestedNameSpecifier::Global:

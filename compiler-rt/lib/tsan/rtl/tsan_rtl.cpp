@@ -28,16 +28,6 @@
 #include "tsan_symbolize.h"
 #include "ubsan/ubsan_init.h"
 
-#ifdef __SSE3__
-// <emmintrin.h> transitively includes <stdlib.h>,
-// and it's prohibited to include std headers into tsan runtime.
-// So we do this dirty trick.
-#define _MM_MALLOC_H_INCLUDED
-#define __MM_MALLOC_H
-#include <emmintrin.h>
-typedef __m128i m128;
-#endif
-
 volatile int __tsan_resumed = 0;
 
 extern "C" void __tsan_resume() {
@@ -257,7 +247,8 @@ static void StopBackgroundThread() {
 #endif
 
 void DontNeedShadowFor(uptr addr, uptr size) {
-  ReleaseMemoryPagesToOS(MemToShadow(addr), MemToShadow(addr + size));
+  ReleaseMemoryPagesToOS(reinterpret_cast<uptr>(MemToShadow(addr)),
+                         reinterpret_cast<uptr>(MemToShadow(addr + size)));
 }
 
 #if !SANITIZER_GO
@@ -337,8 +328,8 @@ static void CheckShadowMapping() {
         const uptr p = RoundDown(p0 + x, kShadowCell);
         if (p < beg || p >= end)
           continue;
-        const uptr s = MemToShadow(p);
-        const uptr m = (uptr)MemToMeta(p);
+        RawShadow *const s = MemToShadow(p);
+        u32 *const m = MemToMeta(p);
         VPrintf(3, "  checking pointer %p: shadow=%p meta=%p\n", p, s, m);
         CHECK(IsAppMem(p));
         CHECK(IsShadowMem(s));
@@ -347,11 +338,10 @@ static void CheckShadowMapping() {
         if (prev) {
           // Ensure that shadow and meta mappings are linear within a single
           // user range. Lots of code that processes memory ranges assumes it.
-          const uptr prev_s = MemToShadow(prev);
-          const uptr prev_m = (uptr)MemToMeta(prev);
-          CHECK_EQ(s - prev_s, (p - prev) * kShadowMultiplier);
-          CHECK_EQ((m - prev_m) / kMetaShadowSize,
-                   (p - prev) / kMetaShadowCell);
+          RawShadow *const prev_s = MemToShadow(prev);
+          u32 *const prev_m = MemToMeta(prev);
+          CHECK_EQ((s - prev_s) * kShadowSize, (p - prev) * kShadowMultiplier);
+          CHECK_EQ(m - prev_m, (p - prev) / kMetaShadowCell);
         }
         prev = p;
       }
@@ -572,7 +562,7 @@ NOINLINE
 void GrowShadowStack(ThreadState *thr) {
   const int sz = thr->shadow_stack_end - thr->shadow_stack;
   const int newsz = 2 * sz;
-  auto newstack = (uptr *)Alloc(newsz * sizeof(uptr));
+  auto *newstack = (uptr *)Alloc(newsz * sizeof(uptr));
   internal_memcpy(newstack, thr->shadow_stack, sz * sizeof(uptr));
   Free(thr->shadow_stack);
   thr->shadow_stack = newstack;
@@ -706,28 +696,28 @@ void MemoryAccessImpl1(ThreadState *thr, uptr addr,
   // threads, which is not enough for the unrolled loop.
 #if SANITIZER_DEBUG
   for (int idx = 0; idx < 4; idx++) {
-#include "tsan_update_shadow_word_inl.h"
+#  include "tsan_update_shadow_word.inc"
   }
 #else
   int idx = 0;
-#include "tsan_update_shadow_word_inl.h"
+#  include "tsan_update_shadow_word.inc"
   idx = 1;
   if (stored) {
-#include "tsan_update_shadow_word_inl.h"
+#  include "tsan_update_shadow_word.inc"
   } else {
-#include "tsan_update_shadow_word_inl.h"
+#  include "tsan_update_shadow_word.inc"
   }
   idx = 2;
   if (stored) {
-#include "tsan_update_shadow_word_inl.h"
+#  include "tsan_update_shadow_word.inc"
   } else {
-#include "tsan_update_shadow_word_inl.h"
+#  include "tsan_update_shadow_word.inc"
   }
   idx = 3;
   if (stored) {
-#include "tsan_update_shadow_word_inl.h"
+#  include "tsan_update_shadow_word.inc"
   } else {
-#include "tsan_update_shadow_word_inl.h"
+#  include "tsan_update_shadow_word.inc"
   }
 #endif
 
@@ -743,8 +733,11 @@ void MemoryAccessImpl1(ThreadState *thr, uptr addr,
   return;
 }
 
-void UnalignedMemoryAccess(ThreadState *thr, uptr pc, uptr addr,
-    int size, bool kAccessIsWrite, bool kIsAtomic) {
+void UnalignedMemoryAccess(ThreadState *thr, uptr pc, uptr addr, uptr size,
+                           AccessType typ) {
+  DCHECK(!(typ & kAccessAtomic));
+  const bool kAccessIsWrite = !(typ & kAccessRead);
+  const bool kIsAtomic = false;
   while (size) {
     int size1 = 1;
     int kAccessSizeLog = kSizeLog1;
@@ -779,10 +772,11 @@ bool ContainsSameAccessSlow(u64 *s, u64 a, u64 sync_epoch, bool is_write) {
   return false;
 }
 
-#if defined(__SSE3__)
-#define SHUF(v0, v1, i0, i1, i2, i3) _mm_castps_si128(_mm_shuffle_ps( \
-    _mm_castsi128_ps(v0), _mm_castsi128_ps(v1), \
-    (i0)*1 + (i1)*4 + (i2)*16 + (i3)*64))
+#if TSAN_VECTORIZE
+#  define SHUF(v0, v1, i0, i1, i2, i3)                    \
+    _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(v0), \
+                                    _mm_castsi128_ps(v1), \
+                                    (i0)*1 + (i1)*4 + (i2)*16 + (i3)*64))
 ALWAYS_INLINE
 bool ContainsSameAccessFast(u64 *s, u64 a, u64 sync_epoch, bool is_write) {
   // This is an optimized version of ContainsSameAccessSlow.
@@ -839,7 +833,7 @@ bool ContainsSameAccessFast(u64 *s, u64 a, u64 sync_epoch, bool is_write) {
 
 ALWAYS_INLINE
 bool ContainsSameAccess(u64 *s, u64 a, u64 sync_epoch, bool is_write) {
-#if defined(__SSE3__)
+#if TSAN_VECTORIZE
   bool res = ContainsSameAccessFast(s, a, sync_epoch, is_write);
   // NOTE: this check can fail if the shadow is concurrently mutated
   // by other threads. But it still can be useful if you modify
@@ -854,7 +848,7 @@ bool ContainsSameAccess(u64 *s, u64 a, u64 sync_epoch, bool is_write) {
 ALWAYS_INLINE USED
 void MemoryAccess(ThreadState *thr, uptr pc, uptr addr,
     int kAccessSizeLog, bool kAccessIsWrite, bool kIsAtomic) {
-  u64 *shadow_mem = (u64*)MemToShadow(addr);
+  RawShadow *shadow_mem = MemToShadow(addr);
   DPrintf2("#%d: MemoryAccess: @%p %p size=%d"
       " is_write=%d shadow_mem=%p {%zx, %zx, %zx, %zx}\n",
       (int)thr->fast_state.tid(), (void*)pc, (void*)addr,
@@ -866,9 +860,9 @@ void MemoryAccess(ThreadState *thr, uptr pc, uptr addr,
     Printf("Access to non app mem %zx\n", addr);
     DCHECK(IsAppMem(addr));
   }
-  if (!IsShadowMem((uptr)shadow_mem)) {
+  if (!IsShadowMem(shadow_mem)) {
     Printf("Bad shadow addr %p (%zx)\n", shadow_mem, addr);
-    DCHECK(IsShadowMem((uptr)shadow_mem));
+    DCHECK(IsShadowMem(shadow_mem));
   }
 #endif
 
@@ -943,9 +937,9 @@ static void MemoryRangeSet(ThreadState *thr, uptr pc, uptr addr, uptr size,
   size = (size + (kShadowCell - 1)) & ~(kShadowCell - 1);
   // UnmapOrDie/MmapFixedNoReserve does not work on Windows.
   if (SANITIZER_WINDOWS || size < common_flags()->clear_shadow_mmap_threshold) {
-    u64 *p = (u64*)MemToShadow(addr);
-    CHECK(IsShadowMem((uptr)p));
-    CHECK(IsShadowMem((uptr)(p + size * kShadowCnt / kShadowCell - 1)));
+    RawShadow *p = MemToShadow(addr);
+    CHECK(IsShadowMem(p));
+    CHECK(IsShadowMem(p + size * kShadowCnt / kShadowCell - 1));
     // FIXME: may overwrite a part outside the region
     for (uptr i = 0; i < size / kShadowCell * kShadowCnt;) {
       p[i++] = val;
@@ -955,9 +949,9 @@ static void MemoryRangeSet(ThreadState *thr, uptr pc, uptr addr, uptr size,
   } else {
     // The region is big, reset only beginning and end.
     const uptr kPageSize = GetPageSizeCached();
-    u64 *begin = (u64*)MemToShadow(addr);
-    u64 *end = begin + size / kShadowCell * kShadowCnt;
-    u64 *p = begin;
+    RawShadow *begin = MemToShadow(addr);
+    RawShadow *end = begin + size / kShadowCell * kShadowCnt;
+    RawShadow *p = begin;
     // Set at least first kPageSize/2 to page boundary.
     while ((p < begin + kPageSize / kShadowSize / 2) || ((uptr)p % kPageSize)) {
       *p++ = val;
@@ -965,7 +959,7 @@ static void MemoryRangeSet(ThreadState *thr, uptr pc, uptr addr, uptr size,
         *p++ = 0;
     }
     // Reset middle part.
-    u64 *p1 = p;
+    RawShadow *p1 = p;
     p = RoundDown(end, kPageSize);
     if (!MmapFixedSuperNoReserve((uptr)p1, (uptr)p - (uptr)p1))
       Die();
@@ -1146,5 +1140,5 @@ void PrintMutexPC(uptr pc) { StackTrace(&pc, 1).Print(); }
 
 #if !SANITIZER_GO
 // Must be included in this file to make sure everything is inlined.
-#  include "tsan_interface_inl.h"
+#  include "tsan_interface.inc"
 #endif

@@ -25,6 +25,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/Analysis/GuardUtils.h"
@@ -2249,6 +2250,23 @@ static Value *isSafeToSpeculateStore(Instruction *I, BasicBlock *BrBB,
         // Found the previous store, return its value operand.
         return SI->getValueOperand();
       return nullptr; // Unknown store.
+    }
+
+    if (auto *LI = dyn_cast<LoadInst>(&CurI)) {
+      if (LI->getPointerOperand() == StorePtr && LI->getType() == StoreTy &&
+          LI->isSimple()) {
+        // Local objects (created by an `alloca` instruction) are always
+        // writable, so once we are past a read from a location it is valid to
+        // also write to that same location.
+        // If the address of the local object never escapes the function, that
+        // means it's never concurrently read or written, hence moving the store
+        // from under the condition will not introduce a data race.
+        auto *AI = dyn_cast<AllocaInst>(getUnderlyingObject(StorePtr));
+        if (AI && !PointerMayBeCaptured(AI, false, true))
+          // Found a previous load, return it.
+          return LI;
+      }
+      // The load didn't work out, but we may still find a store.
     }
   }
 
@@ -5604,8 +5622,32 @@ bool SwitchLookupTable::WouldFitInRegister(const DataLayout &DL,
   return DL.fitsInLegalInteger(TableSize * IT->getBitWidth());
 }
 
+static bool isTypeLegalForLookupTable(Type *Ty, const TargetTransformInfo &TTI,
+                                      const DataLayout &DL) {
+  // Allow any legal type.
+  if (TTI.isTypeLegal(Ty))
+    return true;
+
+  auto *IT = dyn_cast<IntegerType>(Ty);
+  if (!IT)
+    return false;
+
+  // Also allow power of 2 integer types that have at least 8 bits and fit in
+  // a register. These types are common in frontend languages and targets
+  // usually support loads of these types.
+  // TODO: We could relax this to any integer that fits in a register and rely
+  // on ABI alignment and padding in the table to allow the load to be widened.
+  // Or we could widen the constants and truncate the load.
+  unsigned BitWidth = IT->getBitWidth();
+  return BitWidth >= 8 && isPowerOf2_32(BitWidth) &&
+         DL.fitsInLegalInteger(IT->getBitWidth());
+}
+
 /// Determine whether a lookup table should be built for this switch, based on
 /// the number of cases, size of the table, and the types of the results.
+// TODO: We could support larger than legal types by limiting based on the
+// number of loads required and/or table size. If the constants are small we
+// could use smaller table entries and extend after the load.
 static bool
 ShouldBuildLookupTable(SwitchInst *SI, uint64_t TableSize,
                        const TargetTransformInfo &TTI, const DataLayout &DL,
@@ -5619,7 +5661,7 @@ ShouldBuildLookupTable(SwitchInst *SI, uint64_t TableSize,
     Type *Ty = I.second;
 
     // Saturate this flag to true.
-    HasIllegalType = HasIllegalType || !TTI.isTypeLegal(Ty);
+    HasIllegalType = HasIllegalType || !isTypeLegalForLookupTable(Ty, TTI, DL);
 
     // Saturate this flag to false.
     AllTablesFitInRegister =

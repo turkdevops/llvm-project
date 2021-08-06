@@ -332,8 +332,8 @@ static cl::opt<bool>
                            cl::desc("Prefer in-loop vector reductions, "
                                     "overriding the targets preference."));
 
-cl::opt<bool> EnableStrictReductions(
-    "enable-strict-reductions", cl::init(false), cl::Hidden,
+cl::opt<bool> ForceOrderedReductions(
+    "force-ordered-reductions", cl::init(false), cl::Hidden,
     cl::desc("Enable the vectorisation of loops with in-order (strict) "
              "FP reductions"));
 
@@ -594,8 +594,7 @@ protected:
   /// update their users.
   void fixFirstOrderRecurrence(VPWidenPHIRecipe *PhiR, VPTransformState &State);
 
-  /// Fix a reduction cross-iteration phi. This is the second phase of
-  /// vectorizing this phi node.
+  /// Create code for the loop exit value of the reduction.
   void fixReduction(VPReductionPHIRecipe *Phi, VPTransformState &State);
 
   /// Clear NSW/NUW flags from reduction instructions if necessary.
@@ -1319,7 +1318,7 @@ public:
   /// the IsOrdered flag of RdxDesc is set and we do not allow reordering
   /// of FP operations.
   bool useOrderedReductions(const RecurrenceDescriptor &RdxDesc) {
-    return EnableStrictReductions && !Hints->allowReordering() &&
+    return ForceOrderedReductions && !Hints->allowReordering() &&
            RdxDesc.isOrdered();
   }
 
@@ -4303,22 +4302,6 @@ void InnerLoopVectorizer::fixReduction(VPReductionPHIRecipe *PhiR,
   // Wrap flags are in general invalid after vectorization, clear them.
   clearReductionWrapFlags(RdxDesc, State);
 
-  // Fix the vector-loop phi.
-
-  // Reductions do not have to start at zero. They can start with
-  // any loop invariant values.
-  BasicBlock *VectorLoopLatch = LI->getLoopFor(LoopVectorBody)->getLoopLatch();
-
-  unsigned LastPartForNewPhi = PhiR->isOrdered() ? 1 : UF;
-  for (unsigned Part = 0; Part < LastPartForNewPhi; ++Part) {
-    Value *VecRdxPhi = State.get(PhiR->getVPSingleValue(), Part);
-    Value *Val = State.get(PhiR->getBackedgeValue(), Part);
-    if (PhiR->isOrdered())
-      Val = State.get(PhiR->getBackedgeValue(), UF - 1);
-
-    cast<PHINode>(VecRdxPhi)->addIncoming(Val, VectorLoopLatch);
-  }
-
   // Before each round, move the insertion point right between
   // the PHIs and the values we are going to write.
   // This allows us to write both PHINodes and the extractelement
@@ -5137,12 +5120,11 @@ void LoopVectorizationCostModel::collectLoopScalars(ElementCount VF) {
     if (Worklist.count(I))
       return;
 
-    // If all users of the pointer will be memory accesses and scalar, place the
-    // pointer in ScalarPtrs. Otherwise, place the pointer in
-    // PossibleNonScalarPtrs.
-    if (llvm::all_of(I->users(), [&](User *U) {
-          return (isa<LoadInst>(U) || isa<StoreInst>(U)) &&
-                 isScalarUse(cast<Instruction>(U), Ptr);
+    // If the use of the pointer will be a scalar use, and all users of the
+    // pointer are memory accesses, place the pointer in ScalarPtrs. Otherwise,
+    // place the pointer in PossibleNonScalarPtrs.
+    if (isScalarUse(MemAccess, Ptr) && llvm::all_of(I->users(), [&](User *U) {
+          return isa<LoadInst>(U) || isa<StoreInst>(U);
         }))
       ScalarPtrs.insert(I);
     else
@@ -5428,6 +5410,30 @@ void LoopVectorizationCostModel::collectLoopUniforms(ElementCount VF) {
   // lane 0 demanded or b) are uses which demand only lane 0 of their operand.
   for (auto *BB : TheLoop->blocks())
     for (auto &I : *BB) {
+      if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(&I)) {
+        switch (II->getIntrinsicID()) {
+        case Intrinsic::sideeffect:
+        case Intrinsic::experimental_noalias_scope_decl:
+        case Intrinsic::assume:
+        case Intrinsic::lifetime_start:
+        case Intrinsic::lifetime_end:
+          if (TheLoop->hasLoopInvariantOperands(&I))
+            addToWorklistIfAllowed(&I);
+          break;
+        default:
+          break;
+        }
+      }
+
+      // ExtractValue instructions must be uniform, because the operands are
+      // known to be loop-invariant.
+      if (auto *EVI = dyn_cast<ExtractValueInst>(&I)) {
+        assert(isOutOfScope(EVI->getAggregateOperand()) &&
+               "Expected aggregate value to be loop invariant");
+        addToWorklistIfAllowed(EVI);
+        continue;
+      }
+
       // If there's no pointer operand, there's nothing to do.
       auto *Ptr = getLoadStorePointerOperand(&I);
       if (!Ptr)
@@ -8944,6 +8950,37 @@ VPBasicBlock *VPRecipeBuilder::handleReplication(
   bool IsPredicated = LoopVectorizationPlanner::getDecisionAndClampRange(
       [&](ElementCount VF) { return CM.isPredicatedInst(I); }, Range);
 
+  // Even if the instruction is not marked as uniform, there are certain
+  // intrinsic calls that can be effectively treated as such, so we check for
+  // them here. Conservatively, we only do this for scalable vectors, since
+  // for fixed-width VFs we can always fall back on full scalarization.
+  if (!IsUniform && Range.Start.isScalable() && isa<IntrinsicInst>(I)) {
+    switch (cast<IntrinsicInst>(I)->getIntrinsicID()) {
+    case Intrinsic::assume:
+    case Intrinsic::lifetime_start:
+    case Intrinsic::lifetime_end:
+      // For scalable vectors if one of the operands is variant then we still
+      // want to mark as uniform, which will generate one instruction for just
+      // the first lane of the vector. We can't scalarize the call in the same
+      // way as for fixed-width vectors because we don't know how many lanes
+      // there are.
+      //
+      // The reasons for doing it this way for scalable vectors are:
+      //   1. For the assume intrinsic generating the instruction for the first
+      //      lane is still be better than not generating any at all. For
+      //      example, the input may be a splat across all lanes.
+      //   2. For the lifetime start/end intrinsics the pointer operand only
+      //      does anything useful when the input comes from a stack object,
+      //      which suggests it should always be uniform. For non-stack objects
+      //      the effect is to poison the object, which still allows us to
+      //      remove the call.
+      IsUniform = true;
+      break;
+    default:
+      break;
+    }
+  }
+
   auto *Recipe = new VPReplicateRecipe(I, Plan->mapToVPValues(I->operands()),
                                        IsUniform, IsPredicated);
   setRecipe(I, Recipe);
@@ -9547,9 +9584,22 @@ void VPInterleaveRecipe::print(raw_ostream &O, const Twine &Indent,
     O << ", ";
     Mask->printAsOperand(O, SlotTracker);
   }
-  for (unsigned i = 0; i < IG->getFactor(); ++i)
-    if (Instruction *I = IG->getMember(i))
-      O << "\n" << Indent << "  " << VPlanIngredient(I) << " " << i;
+
+  unsigned OpIdx = 0;
+  for (unsigned i = 0; i < IG->getFactor(); ++i) {
+    if (!IG->getMember(i))
+      continue;
+    if (getNumStoreOperands() > 0) {
+      O << "\n" << Indent << "  store ";
+      getOperand(1 + OpIdx)->printAsOperand(O, SlotTracker);
+      O << " to index " << i;
+    } else {
+      O << "\n" << Indent << "  ";
+      getVPValue(OpIdx)->printAsOperand(O, SlotTracker);
+      O << " = load from index " << i;
+    }
+    ++OpIdx;
+  }
 }
 #endif
 
@@ -10131,7 +10181,7 @@ bool LoopVectorizePass::processLoop(Loop *L) {
     return false;
   }
 
-  if (!LVL.canVectorizeFPMath(EnableStrictReductions)) {
+  if (!LVL.canVectorizeFPMath(ForceOrderedReductions)) {
     ORE->emit([&]() {
       auto *ExactFPMathInst = Requirements.getExactFPInst();
       return OptimizationRemarkAnalysisFPCommute(DEBUG_TYPE, "CantReorderFPOps",
