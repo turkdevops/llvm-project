@@ -71,7 +71,8 @@ def Builtin_AffineMapAttr : Builtin_Attr<"AffineMap", [
 //===----------------------------------------------------------------------===//
 
 def Builtin_ArrayAttr : Builtin_Attr<"Array", [
-    DeclareAttrInterfaceMethods<SubElementAttrInterface>
+    DeclareAttrInterfaceMethods<SubElementAttrInterface,
+        ["replaceImmediateSubAttribute"]>
   ]> {
   let summary = "A collection of other Attribute values";
   let description = [{
@@ -345,7 +346,8 @@ def Builtin_DenseStringElementsAttr : Builtin_Attr<
 //===----------------------------------------------------------------------===//
 
 def Builtin_DictionaryAttr : Builtin_Attr<"Dictionary", [
-    DeclareAttrInterfaceMethods<SubElementAttrInterface>
+    DeclareAttrInterfaceMethods<SubElementAttrInterface,
+        ["replaceImmediateSubAttribute"]>
   ]> {
   let summary = "An dictionary of named Attribute values";
   let description = [{
@@ -386,6 +388,10 @@ def Builtin_DictionaryAttr : Builtin_Attr<"Dictionary", [
     /// Return the specified named attribute if present, None otherwise.
     Optional<NamedAttribute> getNamed(StringRef name) const;
     Optional<NamedAttribute> getNamed(Identifier name) const;
+
+    /// Return whether the specified attribute is present.
+    bool contains(StringRef name) const;
+    bool contains(Identifier name) const;
 
     /// Support range iteration.
     using iterator = llvm::ArrayRef<NamedAttribute>::iterator;
@@ -954,10 +960,11 @@ def Builtin_SymbolRefAttr : Builtin_Attr<"SymbolRef"> {
     symbol nested within a different symbol table.
 
     This attribute can only be held internally by
-    [array attributes](#array-attribute) and
+    [array attributes](#array-attribute),
     [dictionary attributes](#dictionary-attribute)(including the top-level
-    operation attribute dictionary), i.e. no other attribute kinds such as
-    Locations or extended attribute kinds.
+    operation attribute dictionary) as well as attributes exposing it via
+    the `SubElementAttrInterface` interface. Symbol reference attributes
+    nested in types are currently not supported.
 
     **Rationale:** Identifying accesses to global data is critical to
     enabling efficient multi-threaded compilation. Restricting global

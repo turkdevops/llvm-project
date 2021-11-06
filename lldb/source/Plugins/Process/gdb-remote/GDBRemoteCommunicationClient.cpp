@@ -970,26 +970,21 @@ llvm::VersionTuple GDBRemoteCommunicationClient::GetMacCatalystVersion() {
   return m_maccatalyst_version;
 }
 
-bool GDBRemoteCommunicationClient::GetOSBuildString(std::string &s) {
+llvm::Optional<std::string> GDBRemoteCommunicationClient::GetOSBuildString() {
   if (GetHostInfo()) {
-    if (!m_os_build.empty()) {
-      s = m_os_build;
-      return true;
-    }
+    if (!m_os_build.empty())
+      return m_os_build;
   }
-  s.clear();
-  return false;
+  return llvm::None;
 }
 
-bool GDBRemoteCommunicationClient::GetOSKernelDescription(std::string &s) {
+llvm::Optional<std::string>
+GDBRemoteCommunicationClient::GetOSKernelDescription() {
   if (GetHostInfo()) {
-    if (!m_os_kernel.empty()) {
-      s = m_os_kernel;
-      return true;
-    }
+    if (!m_os_kernel.empty())
+      return m_os_kernel;
   }
-  s.clear();
-  return false;
+  return llvm::None;
 }
 
 bool GDBRemoteCommunicationClient::GetHostname(std::string &s) {
@@ -1114,9 +1109,8 @@ void GDBRemoteCommunicationClient::MaybeEnableCompression(
 
   if (avail_type != CompressionType::None) {
     StringExtractorGDBRemote response;
-    llvm::Twine packet = "QEnableCompression:type:" + avail_name + ";";
-    if (SendPacketAndWaitForResponse(packet.str(), response) !=
-        PacketResult::Success)
+    std::string packet = "QEnableCompression:type:" + avail_name.str() + ";";
+    if (SendPacketAndWaitForResponse(packet, response) != PacketResult::Success)
       return;
 
     if (response.IsOKResponse()) {
@@ -1543,17 +1537,17 @@ Status GDBRemoteCommunicationClient::GetMemoryRegionInfo(
                    region_info.GetRange().IsValid()) {
           saw_permissions = true;
           if (region_info.GetRange().Contains(addr)) {
-            if (value.find('r') != llvm::StringRef::npos)
+            if (value.contains('r'))
               region_info.SetReadable(MemoryRegionInfo::eYes);
             else
               region_info.SetReadable(MemoryRegionInfo::eNo);
 
-            if (value.find('w') != llvm::StringRef::npos)
+            if (value.contains('w'))
               region_info.SetWritable(MemoryRegionInfo::eYes);
             else
               region_info.SetWritable(MemoryRegionInfo::eNo);
 
-            if (value.find('x') != llvm::StringRef::npos)
+            if (value.contains('x'))
               region_info.SetExecutable(MemoryRegionInfo::eYes);
             else
               region_info.SetExecutable(MemoryRegionInfo::eNo);

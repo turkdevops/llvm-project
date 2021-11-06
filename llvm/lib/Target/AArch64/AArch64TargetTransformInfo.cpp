@@ -864,6 +864,74 @@ static Optional<Instruction *> instCombineSVEZip(InstCombiner &IC,
   return None;
 }
 
+static Optional<Instruction *> instCombineLD1GatherIndex(InstCombiner &IC,
+                                                         IntrinsicInst &II) {
+  Value *Mask = II.getOperand(0);
+  Value *BasePtr = II.getOperand(1);
+  Value *Index = II.getOperand(2);
+  Type *Ty = II.getType();
+  Type *BasePtrTy = BasePtr->getType();
+  Value *PassThru = ConstantAggregateZero::get(Ty);
+
+  // Contiguous gather => masked load.
+  // (sve.ld1.gather.index Mask BasePtr (sve.index IndexBase 1))
+  // => (masked.load (gep BasePtr IndexBase) Align Mask zeroinitializer)
+  Value *IndexBase;
+  if (match(Index, m_Intrinsic<Intrinsic::aarch64_sve_index>(
+                       m_Value(IndexBase), m_SpecificInt(1)))) {
+    IRBuilder<> Builder(II.getContext());
+    Builder.SetInsertPoint(&II);
+
+    Align Alignment =
+        BasePtr->getPointerAlignment(II.getModule()->getDataLayout());
+
+    Type *VecPtrTy = PointerType::getUnqual(Ty);
+    Value *Ptr = Builder.CreateGEP(BasePtrTy->getPointerElementType(), BasePtr,
+                                   IndexBase);
+    Ptr = Builder.CreateBitCast(Ptr, VecPtrTy);
+    CallInst *MaskedLoad =
+        Builder.CreateMaskedLoad(Ty, Ptr, Alignment, Mask, PassThru);
+    MaskedLoad->takeName(&II);
+    return IC.replaceInstUsesWith(II, MaskedLoad);
+  }
+
+  return None;
+}
+
+static Optional<Instruction *> instCombineST1ScatterIndex(InstCombiner &IC,
+                                                          IntrinsicInst &II) {
+  Value *Val = II.getOperand(0);
+  Value *Mask = II.getOperand(1);
+  Value *BasePtr = II.getOperand(2);
+  Value *Index = II.getOperand(3);
+  Type *Ty = Val->getType();
+  Type *BasePtrTy = BasePtr->getType();
+
+  // Contiguous scatter => masked store.
+  // (sve.ld1.scatter.index Value Mask BasePtr (sve.index IndexBase 1))
+  // => (masked.store Value (gep BasePtr IndexBase) Align Mask)
+  Value *IndexBase;
+  if (match(Index, m_Intrinsic<Intrinsic::aarch64_sve_index>(
+                       m_Value(IndexBase), m_SpecificInt(1)))) {
+    IRBuilder<> Builder(II.getContext());
+    Builder.SetInsertPoint(&II);
+
+    Align Alignment =
+        BasePtr->getPointerAlignment(II.getModule()->getDataLayout());
+
+    Value *Ptr = Builder.CreateGEP(BasePtrTy->getPointerElementType(), BasePtr,
+                                   IndexBase);
+    Type *VecPtrTy = PointerType::getUnqual(Ty);
+    Ptr = Builder.CreateBitCast(Ptr, VecPtrTy);
+
+    (void)Builder.CreateMaskedStore(Val, Ptr, Alignment, Mask);
+
+    return IC.eraseInstFromFunction(II);
+  }
+
+  return None;
+}
+
 Optional<Instruction *>
 AArch64TTIImpl::instCombineIntrinsic(InstCombiner &IC,
                                      IntrinsicInst &II) const {
@@ -915,6 +983,10 @@ AArch64TTIImpl::instCombineIntrinsic(InstCombiner &IC,
   case Intrinsic::aarch64_sve_zip1:
   case Intrinsic::aarch64_sve_zip2:
     return instCombineSVEZip(IC, II);
+  case Intrinsic::aarch64_sve_ld1_gather_index:
+    return instCombineLD1GatherIndex(IC, II);
+  case Intrinsic::aarch64_sve_st1_scatter_index:
+    return instCombineST1ScatterIndex(IC, II);
   }
 
   return None;
@@ -1710,9 +1782,10 @@ InstructionCost AArch64TTIImpl::getInterleavedMemoryOpCost(
     // ldN/stN only support legal vector types of size 64 or 128 in bits.
     // Accesses having vector types that are a multiple of 128 bits can be
     // matched to more than one ldN/stN instruction.
+    bool UseScalable;
     if (NumElts % Factor == 0 &&
-        TLI->isLegalInterleavedAccessType(SubVecTy, DL))
-      return Factor * TLI->getNumInterleavedAccesses(SubVecTy, DL);
+        TLI->isLegalInterleavedAccessType(SubVecTy, DL, UseScalable))
+      return Factor * TLI->getNumInterleavedAccesses(SubVecTy, DL, UseScalable);
   }
 
   return BaseT::getInterleavedMemoryOpCost(Opcode, VecTy, Factor, Indices,
