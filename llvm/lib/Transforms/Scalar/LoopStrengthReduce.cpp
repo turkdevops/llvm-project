@@ -2822,9 +2822,7 @@ static const SCEV *getExprBase(const SCEV *S) {
     // there's nothing more complex.
     // FIXME: not sure if we want to recognize negation.
     const SCEVAddExpr *Add = cast<SCEVAddExpr>(S);
-    for (std::reverse_iterator<SCEVAddExpr::op_iterator> I(Add->op_end()),
-           E(Add->op_begin()); I != E; ++I) {
-      const SCEV *SubExpr = *I;
+    for (const SCEV *SubExpr : reverse(Add->operands())) {
       if (SubExpr->getSCEVType() == scAddExpr)
         return getExprBase(SubExpr);
 
@@ -5870,6 +5868,7 @@ void LoopStrengthReduce::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addPreserved<MemorySSAWrapperPass>();
 }
 
+namespace {
 struct SCEVDbgValueBuilder {
   SCEVDbgValueBuilder() = default;
   SCEVDbgValueBuilder(const SCEVDbgValueBuilder &Base) {
@@ -6117,6 +6116,7 @@ struct DVIRecoveryRec {
   Metadata *LocationOp;
   const llvm::SCEV *SCEV;
 };
+} // namespace
 
 static void RewriteDVIUsingIterCount(DVIRecoveryRec CachedDVI,
                                      const SCEVDbgValueBuilder &IterationCount,

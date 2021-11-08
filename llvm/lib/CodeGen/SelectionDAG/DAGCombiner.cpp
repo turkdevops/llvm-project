@@ -5633,12 +5633,15 @@ static SDValue foldAndToUsubsat(SDNode *N, SelectionDAG &DAG) {
   SDValue N1 = N->getOperand(1);
   EVT VT = N1.getValueType();
 
-  // Canonicalize xor as operand 0.
-  if (N1.getOpcode() == ISD::XOR)
+  // Canonicalize SRA as operand 1.
+  if (N0.getOpcode() == ISD::SRA)
     std::swap(N0, N1);
 
-  if (N0.getOpcode() != ISD::XOR || N1.getOpcode() != ISD::SRA ||
-      !N0.hasOneUse() || !N1.hasOneUse() ||
+  // xor/add with SMIN (signmask) are logically equivalent.
+  if (N0.getOpcode() != ISD::XOR && N0.getOpcode() != ISD::ADD)
+    return SDValue();
+
+  if (N1.getOpcode() != ISD::SRA || !N0.hasOneUse() || !N1.hasOneUse() ||
       N0.getOperand(0) != N1.getOperand(0))
     return SDValue();
 
@@ -5650,6 +5653,7 @@ static SDValue foldAndToUsubsat(SDNode *N, SelectionDAG &DAG) {
     return SDValue();
 
   // (i8 X ^ 128) & (i8 X s>> 7) --> usubsat X, 128
+  // (i8 X + 128) & (i8 X s>> 7) --> usubsat X, 128
   SDLoc DL(N);
   SDValue SignMask = DAG.getConstant(XorC->getAPIntValue(), DL, VT);
   return DAG.getNode(ISD::USUBSAT, DL, VT, N0.getOperand(0), SignMask);
@@ -6976,10 +6980,7 @@ SDValue DAGCombiner::MatchFunnelPosNeg(SDValue N0, SDValue N1, SDValue Pos,
 // a rot[lr]. This also matches funnel shift patterns, similar to rotation but
 // with different shifted sources.
 SDValue DAGCombiner::MatchRotate(SDValue LHS, SDValue RHS, const SDLoc &DL) {
-  // Must be a legal type.  Expanded 'n promoted things won't work with rotates.
   EVT VT = LHS.getValueType();
-  if (!TLI.isTypeLegal(VT))
-    return SDValue();
 
   // The target must have at least one rotate/funnel flavor.
   bool HasROTL = hasOperation(ISD::ROTL, VT);
@@ -8551,25 +8552,42 @@ static SDValue combineShiftToMULH(SDNode *N, SelectionDAG &DAG,
   // Both operands must be equivalent extend nodes.
   SDValue LeftOp = ShiftOperand.getOperand(0);
   SDValue RightOp = ShiftOperand.getOperand(1);
+
   bool IsSignExt = LeftOp.getOpcode() == ISD::SIGN_EXTEND;
   bool IsZeroExt = LeftOp.getOpcode() == ISD::ZERO_EXTEND;
 
-  if ((!(IsSignExt || IsZeroExt)) || LeftOp.getOpcode() != RightOp.getOpcode())
+  if (!IsSignExt && !IsZeroExt)
     return SDValue();
+
+  EVT NarrowVT = LeftOp.getOperand(0).getValueType();
+  unsigned NarrowVTSize = NarrowVT.getScalarSizeInBits();
+
+  SDValue MulhRightOp;
+  if (ConstantSDNode *Constant = isConstOrConstSplat(RightOp)) {
+    unsigned ActiveBits = IsSignExt
+                              ? Constant->getAPIntValue().getMinSignedBits()
+                              : Constant->getAPIntValue().getActiveBits();
+    if (ActiveBits > NarrowVTSize)
+      return SDValue();
+    MulhRightOp = DAG.getConstant(
+        Constant->getAPIntValue().trunc(NarrowVT.getScalarSizeInBits()), DL,
+        NarrowVT);
+  } else {
+    if (LeftOp.getOpcode() != RightOp.getOpcode())
+      return SDValue();
+    // Check that the two extend nodes are the same type.
+    if (NarrowVT != RightOp.getOperand(0).getValueType())
+      return SDValue();
+    MulhRightOp = RightOp.getOperand(0);
+  }
 
   EVT WideVT = LeftOp.getValueType();
   // Proceed with the transformation if the wide types match.
   assert((WideVT == RightOp.getValueType()) &&
          "Cannot have a multiply node with two different operand types.");
 
-  EVT NarrowVT = LeftOp.getOperand(0).getValueType();
-  // Check that the two extend nodes are the same type.
-  if (NarrowVT != RightOp.getOperand(0).getValueType())
-    return SDValue();
-
   // Proceed with the transformation if the wide type is twice as large
   // as the narrow type.
-  unsigned NarrowVTSize = NarrowVT.getScalarSizeInBits();
   if (WideVT.getScalarSizeInBits() != 2 * NarrowVTSize)
     return SDValue();
 
@@ -8588,8 +8606,8 @@ static SDValue combineShiftToMULH(SDNode *N, SelectionDAG &DAG,
   if (!TLI.isOperationLegalOrCustom(MulhOpcode, NarrowVT))
     return SDValue();
 
-  SDValue Result = DAG.getNode(MulhOpcode, DL, NarrowVT, LeftOp.getOperand(0),
-                               RightOp.getOperand(0));
+  SDValue Result =
+      DAG.getNode(MulhOpcode, DL, NarrowVT, LeftOp.getOperand(0), MulhRightOp);
   return (N->getOpcode() == ISD::SRA ? DAG.getSExtOrTrunc(Result, DL, WideVT)
                                      : DAG.getZExtOrTrunc(Result, DL, WideVT));
 }
@@ -9526,6 +9544,40 @@ static SDValue foldBoolSelectToLogic(SDNode *N, SelectionDAG &DAG) {
   return SDValue();
 }
 
+static SDValue foldVSelectToSignBitSplatMask(SDNode *N, SelectionDAG &DAG) {
+  SDValue N0 = N->getOperand(0);
+  SDValue N1 = N->getOperand(1);
+  SDValue N2 = N->getOperand(2);
+  EVT VT = N->getValueType(0);
+  if (N0.getOpcode() != ISD::SETCC || !N0.hasOneUse())
+    return SDValue();
+
+  SDValue Cond0 = N0.getOperand(0);
+  SDValue Cond1 = N0.getOperand(1);
+  ISD::CondCode CC = cast<CondCodeSDNode>(N0.getOperand(2))->get();
+  if (VT != Cond0.getValueType())
+    return SDValue();
+
+  // (Cond0 s< 0) ? N1 : 0 --> (Cond0 s>> BW-1) & N1
+  if (CC == ISD::SETLT && isNullOrNullSplat(Cond1) && isNullOrNullSplat(N2)) {
+    SDLoc DL(N);
+    SDValue ShiftAmt = DAG.getConstant(VT.getScalarSizeInBits() - 1, DL, VT);
+    SDValue Sra = DAG.getNode(ISD::SRA, DL, VT, Cond0, ShiftAmt);
+    return DAG.getNode(ISD::AND, DL, VT, Sra, N1);
+  }
+
+  // (Cond0 s< 0) ? -1 : N2 --> (Cond0 s>> BW-1) | N2
+  if (CC == ISD::SETLT && isNullOrNullSplat(Cond1) &&
+      isAllOnesOrAllOnesSplat(N1)) {
+    SDLoc DL(N);
+    SDValue ShiftAmt = DAG.getConstant(VT.getScalarSizeInBits() - 1, DL, VT);
+    SDValue Sra = DAG.getNode(ISD::SRA, DL, VT, Cond0, ShiftAmt);
+    return DAG.getNode(ISD::OR, DL, VT, Sra, N2);
+  }
+
+  return SDValue();
+}
+
 SDValue DAGCombiner::visitSELECT(SDNode *N) {
   SDValue N0 = N->getOperand(0);
   SDValue N1 = N->getOperand(1);
@@ -10215,6 +10267,10 @@ SDValue DAGCombiner::visitVSELECT(SDNode *N) {
 
   if (SDValue V = foldVSelectOfConstants(N))
     return V;
+
+  if (hasOperation(ISD::SRA, VT))
+    if (SDValue V = foldVSelectToSignBitSplatMask(N, DAG))
+      return V;
 
   return SDValue();
 }
@@ -13057,7 +13113,7 @@ static bool isContractableFMUL(const TargetOptions &Options, SDValue N) {
          N->getFlags().hasAllowContract();
 }
 
-// Return true if `N` can assume no infinities involved in it's computation.
+// Returns true if `N` can assume no infinities involved in its computation.
 static bool hasNoInfs(const TargetOptions &Options, SDValue N) {
   return Options.NoInfsFPMath || N.getNode()->getFlags().hasNoInfs();
 }
@@ -22252,8 +22308,8 @@ SDValue DAGCombiner::SimplifyVBinOp(SDNode *N) {
   SDNodeFlags Flags = N->getFlags();
 
   // See if we can constant fold the vector operation.
-  if (SDValue Fold = DAG.FoldConstantVectorArithmetic(
-          Opcode, SDLoc(LHS), LHS.getValueType(), Ops, N->getFlags()))
+  if (SDValue Fold = DAG.FoldConstantArithmetic(Opcode, SDLoc(LHS),
+                                                LHS.getValueType(), Ops))
     return Fold;
 
   // Move unary shuffles with identical masks after a vector binop:
