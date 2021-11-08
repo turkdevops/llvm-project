@@ -1329,6 +1329,30 @@ def : Pat<(OneI32ResultOp),
               ConstantAttr<I32Attr, "2">)>;
 
 //===----------------------------------------------------------------------===//
+// Test Patterns (either)
+
+def TestEitherOpA : TEST_Op<"either_op_a"> {
+  let arguments = (ins AnyInteger:$arg0, AnyInteger:$arg1, AnyInteger:$arg2);
+  let results = (outs I32:$output);
+}
+
+def TestEitherOpB : TEST_Op<"either_op_b"> {
+  let arguments = (ins AnyInteger:$arg0);
+  let results = (outs I32:$output);
+}
+
+def : Pat<(TestEitherOpA (either I32:$arg1, I16:$arg2), $_),
+          (TestEitherOpB $arg2)>;
+
+def : Pat<(TestEitherOpA (either (TestEitherOpB I32:$arg1), I16:$arg2), $_),
+          (TestEitherOpB $arg2)>;
+
+def : Pat<(TestEitherOpA (either (TestEitherOpB I32:$arg1),
+                                 (TestEitherOpB I16:$arg2)),
+                          $_),
+          (TestEitherOpB $arg2)>;
+
+//===----------------------------------------------------------------------===//
 // Test Patterns (Location)
 
 // Test that we can specify locations for generated ops.
@@ -1497,14 +1521,31 @@ def TestValidOp : TEST_Op<"valid", [Terminator]>,
 def TestMergeBlocksOp : TEST_Op<"merge_blocks"> {
   let summary = "merge_blocks operation";
   let description = [{
-    Test op with multiple blocks that are merged with Dialect Conversion"
+    Test op with multiple blocks that are merged with Dialect Conversion
   }];
 
   let regions = (region AnyRegion:$body);
   let results = (outs Variadic<AnyType>:$result);
 }
 
+def TestRemappedValueRegionOp : TEST_Op<"remapped_value_region",
+                                        [SingleBlock]> {
+  let summary = "remapped_value_region operation";
+  let description = [{
+    Test op that remaps values that haven't yet been converted in Dialect
+    Conversion.
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+  let results = (outs Variadic<AnyType>:$result);
+}
+
 def TestSignatureConversionUndoOp : TEST_Op<"signature_conversion_undo"> {
+  let regions = (region AnyRegion);
+}
+
+def TestSignatureConversionNoConverterOp
+  : TEST_Op<"signature_conversion_no_converter"> {
   let regions = (region AnyRegion);
 }
 
@@ -1886,10 +1927,10 @@ def FormatCustomDirectiveOperandsAndTypes
 }
 
 def FormatCustomDirectiveRegions : TEST_Op<"format_custom_directive_regions"> {
-  let regions = (region AnyRegion:$region, VariadicRegion<AnyRegion>:$regions);
+  let regions = (region AnyRegion:$region, VariadicRegion<AnyRegion>:$other_regions);
   let assemblyFormat = [{
     custom<CustomDirectiveRegions>(
-      $region, $regions
+      $region, $other_regions
     )
     attr-dict
   }];
