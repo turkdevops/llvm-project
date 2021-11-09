@@ -480,7 +480,7 @@ static bool hasObjCCategory(StringRef Name) {
   if (!isObjCClass(Name))
     return false;
 
-  return Name.find(") ") != StringRef::npos;
+  return Name.contains(") ");
 }
 
 static void getObjCClassCategory(StringRef In, StringRef &Class,
@@ -1156,6 +1156,12 @@ void DwarfDebug::beginModule(Module *M) {
   assert(MMI->hasDebugInfo() &&
          "DebugInfoAvailabilty unexpectedly not initialized");
   SingleCU = NumDebugCUs == 1;
+
+  for (const auto &F : M->functions())
+    if (!F.isDeclaration())
+      if (const auto *SP = F.getSubprogram())
+        ConcreteSPs.insert(SP);
+
   DenseMap<DIGlobalVariable *, SmallVector<DwarfCompileUnit::GlobalExpr, 1>>
       GVMap;
   for (const GlobalVariable &Global : M->globals()) {

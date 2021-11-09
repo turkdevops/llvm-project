@@ -640,6 +640,9 @@ DICompositeType *DICompositeType::buildODRType(
                VTableHolder, TemplateParams, &Identifier, Discriminator,
                DataLocation, Associated, Allocated, Rank, Annotations);
 
+  if (CT->getTag() != Tag)
+    return nullptr;
+
   // Only mutate CT if it's a forward declaration and the new operands aren't.
   assert(CT->getRawIdentifier() == &Identifier && "Wrong ODR identifier?");
   if (!CT->isForwardDecl() || (Flags & DINode::FlagFwdDecl))
@@ -672,12 +675,16 @@ DICompositeType *DICompositeType::getODRType(
   if (!Context.isODRUniquingDebugTypes())
     return nullptr;
   auto *&CT = (*Context.pImpl->DITypeMap)[&Identifier];
-  if (!CT)
+  if (!CT) {
     CT = DICompositeType::getDistinct(
         Context, Tag, Name, File, Line, Scope, BaseType, SizeInBits,
         AlignInBits, OffsetInBits, Flags, Elements, RuntimeLang, VTableHolder,
         TemplateParams, &Identifier, Discriminator, DataLocation, Associated,
         Allocated, Rank, Annotations);
+  } else {
+    if (CT->getTag() != Tag)
+      return nullptr;
+  }
   return CT;
 }
 
@@ -1064,6 +1071,7 @@ DILabel *DILabel::getImpl(LLVMContext &Context, Metadata *Scope,
 DIExpression *DIExpression::getImpl(LLVMContext &Context,
                                     ArrayRef<uint64_t> Elements,
                                     StorageType Storage, bool ShouldCreate) {
+  assert(Storage != Distinct && "DIExpression cannot be distinct");
   DEFINE_GETIMPL_LOOKUP(DIExpression, (Elements));
   DEFINE_GETIMPL_STORE_NO_OPS(DIExpression, (Elements));
 }
@@ -1634,6 +1642,7 @@ DIMacroFile *DIMacroFile::getImpl(LLVMContext &Context, unsigned MIType,
 DIArgList *DIArgList::getImpl(LLVMContext &Context,
                               ArrayRef<ValueAsMetadata *> Args,
                               StorageType Storage, bool ShouldCreate) {
+  assert(Storage != Distinct && "DIArgList cannot be distinct");
   DEFINE_GETIMPL_LOOKUP(DIArgList, (Args));
   DEFINE_GETIMPL_STORE_NO_OPS(DIArgList, (Args));
 }

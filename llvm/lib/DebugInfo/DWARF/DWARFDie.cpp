@@ -226,9 +226,6 @@ struct DWARFTypePrinter {
     }
     case DW_TAG_array_type: {
       appendQualifiedNameBefore(Inner);
-      if (Word)
-        OS << ' ';
-      Word = false;
       break;
     }
     case DW_TAG_reference_type:
@@ -281,13 +278,7 @@ struct DWARFTypePrinter {
     default: {
       const char *NamePtr = dwarf::toString(D.find(DW_AT_name), nullptr);
       if (!NamePtr) {
-        StringRef TagStr = TagString(D.getTag());
-        static constexpr StringRef Prefix = "DW_TAG_";
-        static constexpr StringRef Suffix = "_type";
-        if (TagStr.startswith(Prefix) && TagStr.endswith(Suffix))
-          OS << TagStr.substr(Prefix.size(),
-                              TagStr.size() - (Prefix.size() + Suffix.size()))
-             << " ";
+        appendTypeTagName(D.getTag());
         return Inner;
       }
       Word = true;
@@ -305,18 +296,19 @@ struct DWARFTypePrinter {
       } else
         EndedWithTemplate = Name.endswith(">");
       OS << Name;
-      // FIXME: This needs to be a bit more narrow, it would fail to
-      // reconstitute a non-operator overload that is a template, like
-      // "operator_thing<int>"
-      if (!Name.endswith(">") && !Name.startswith("operator")) {
-        if (appendTemplateParameters(D)) {
-          if (EndedWithTemplate)
-            OS << ' ';
-          OS << '>';
-          EndedWithTemplate = true;
-          Word = true;
-        }
-      }
+      // This check would be insufficient for operator overloads like
+      // "operator>>" - but for now Clang doesn't try to simplify them, so this
+      // is OK. Add more nuanced operator overload handling here if/when needed.
+      if (Name.endswith(">"))
+        break;
+      if (!appendTemplateParameters(D))
+        break;
+
+      if (EndedWithTemplate)
+        OS << ' ';
+      OS << '>';
+      EndedWithTemplate = true;
+      Word = true;
       break;
     }
     }
@@ -674,7 +666,7 @@ struct DWARFTypePrinter {
       return;
     if (D.getTag() == DW_TAG_type_unit)
       return;
-    if (D.getTag() == llvm::dwarf::DW_TAG_skeleton_unit)
+    if (D.getTag() == DW_TAG_skeleton_unit)
       return;
     if (D.getTag() == DW_TAG_subprogram)
       return;
@@ -1082,9 +1074,13 @@ void DWARFDie::dump(raw_ostream &OS, unsigned Indent,
       if (AbbrevDecl) {
         WithColor(OS, HighlightColor::Tag).get().indent(Indent)
             << formatv("{0}", getTag());
-        if (DumpOpts.Verbose)
+        if (DumpOpts.Verbose) {
           OS << format(" [%u] %c", abbrCode,
                        AbbrevDecl->hasChildren() ? '*' : ' ');
+          if (Optional<uint32_t> ParentIdx = Die->getParentIdx())
+            OS << format(" (0x%8.8" PRIx64 ")",
+                         U->getDIEAtIndex(*ParentIdx).getOffset());
+        }
         OS << '\n';
 
         // Dump all data in the DIE for the attributes.
