@@ -432,7 +432,8 @@ public:
 
   /// Merge local ids of `this` and `other`. This is done by appending local ids
   /// of `other` to `this` and inserting local ids of `this` to `other` at start
-  /// of its local ids.
+  /// of its local ids. Number of dimension and symbol ids should match in
+  /// `this` and `other`.
   void mergeLocalIds(FlatAffineConstraints &other);
 
   /// Removes all equalities and inequalities.
@@ -884,8 +885,9 @@ public:
   }
 
   /// Merge and align symbols of `this` and `other` such that both get union of
-  /// of symbols that are unique. Symbols with Value as `None` are considered
-  /// to be inequal to all other symbols.
+  /// of symbols that are unique. Symbols in `this` and `other` should be
+  /// unique. Symbols with Value as `None` are considered to be inequal to all
+  /// other symbols.
   void mergeSymbolIds(FlatAffineValueConstraints &other);
 
 protected:
@@ -1068,6 +1070,13 @@ AffineMap alignAffineMapWithValues(AffineMap map, ValueRange operands,
 LogicalResult getRelationFromMap(AffineMap &map, FlatAffineRelation &rel);
 LogicalResult getRelationFromMap(const AffineValueMap &map,
                                  FlatAffineRelation &rel);
+
+/// This parses a single IntegerSet to an MLIR context and transforms it to
+/// FlatAffineConstraints if it was valid. If not, a failure is returned. If the
+/// passed `str` has additional tokens that were not part of the IntegerSet, a
+/// failure is returned.
+FailureOr<FlatAffineConstraints> parseIntegerSetToFAC(llvm::StringRef,
+                                                      MLIRContext *context);
 
 } // end namespace mlir.
 
