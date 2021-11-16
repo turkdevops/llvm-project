@@ -29,7 +29,7 @@ using namespace mlir::linalg;
 #define DEBUG_TYPE "linalg-codegen-strategy"
 
 void mlir::linalg::CodegenStrategy::configurePassPipeline(
-    OpPassManager &pm, MLIRContext *context) const {
+    OpPassManager &pm, MLIRContext *context, bool addEnablePass) const {
   for (unsigned stepCount = 0, e = transformationSequence.size(); stepCount < e;
        ++stepCount) {
     const std::unique_ptr<Transformation> &t =
@@ -44,21 +44,8 @@ void mlir::linalg::CodegenStrategy::configurePassPipeline(
                       : linalg::LinalgTransformationFilter(
                             t->filter, currentState, nextState);
     t->addToPassPipeline(pm, filter);
-    pm.addPass(createLinalgStrategyEnablePass());
+    if (addEnablePass)
+      pm.addPass(createLinalgStrategyEnablePass(linalgEnablingOptions));
   }
-  LinalgVectorLoweringOptions vectorLoweringOptions;
-  vectorLoweringOptions.maxTransferRank =
-      lateCodegenStrategyOptions.maxTransferRank;
-  vectorLoweringOptions.enableVectorTransferLowering =
-      lateCodegenStrategyOptions.enableVectorTransferLowering;
-  vectorLoweringOptions.enableVectorTransferPartialRewrite =
-      lateCodegenStrategyOptions.enableVectorTransferPartialRewrite;
-  vectorLoweringOptions.enableVectorContractLowering =
-      lateCodegenStrategyOptions.enableVectorContractLowering;
-  vectorLoweringOptions.enableVectorToSCFConversion =
-      lateCodegenStrategyOptions.enableVectorToSCFConversion;
-  vectorLoweringOptions.vectorTransformOptions = vectorTransformOptions;
-  vectorLoweringOptions.vectorTransferToSCFOptions = vectorToSCFOptions;
-  pm.addPass(createLinalgStrategyLowerVectorsPass(vectorLoweringOptions));
   pm.addPass(createLinalgStrategyRemoveMarkersPass());
 }

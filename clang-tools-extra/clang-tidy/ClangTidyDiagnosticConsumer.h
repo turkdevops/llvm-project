@@ -23,10 +23,10 @@ class CompilerInstance;
 class SourceManager;
 namespace ast_matchers {
 class MatchFinder;
-}
+} // namespace ast_matchers
 namespace tooling {
 class CompilationDatabase;
-}
+} // namespace tooling
 
 namespace tidy {
 
@@ -45,18 +45,13 @@ struct ClangTidyError : tooling::Diagnostic {
   std::vector<std::string> EnabledDiagnosticAliases;
 };
 
-/// Contains displayed and ignored diagnostic counters for a ClangTidy
-/// run.
+/// Contains displayed and ignored diagnostic counters for a ClangTidy run.
 struct ClangTidyStats {
-  ClangTidyStats()
-      : ErrorsDisplayed(0), ErrorsIgnoredCheckFilter(0), ErrorsIgnoredNOLINT(0),
-        ErrorsIgnoredNonUserCode(0), ErrorsIgnoredLineFilter(0) {}
-
-  unsigned ErrorsDisplayed;
-  unsigned ErrorsIgnoredCheckFilter;
-  unsigned ErrorsIgnoredNOLINT;
-  unsigned ErrorsIgnoredNonUserCode;
-  unsigned ErrorsIgnoredLineFilter;
+  unsigned ErrorsDisplayed = 0;
+  unsigned ErrorsIgnoredCheckFilter = 0;
+  unsigned ErrorsIgnoredNOLINT = 0;
+  unsigned ErrorsIgnoredNonUserCode = 0;
+  unsigned ErrorsIgnoredLineFilter = 0;
 
   unsigned errorsIgnored() const {
     return ErrorsIgnoredNOLINT + ErrorsIgnoredCheckFilter +
