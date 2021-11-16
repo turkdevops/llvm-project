@@ -39,7 +39,7 @@ static bool acceptBitWidth(unsigned bitWidth) {
   }
 }
 
-Attribute SparseTensorEncodingAttr::parse(DialectAsmParser &parser, Type type) {
+Attribute SparseTensorEncodingAttr::parse(AsmParser &parser, Type type) {
   if (failed(parser.parseLess()))
     return {};
   // Parse the data as a dictionary.
@@ -117,9 +117,9 @@ Attribute SparseTensorEncodingAttr::parse(DialectAsmParser &parser, Type type) {
                                                      map, ptr, ind);
 }
 
-void SparseTensorEncodingAttr::print(DialectAsmPrinter &printer) const {
+void SparseTensorEncodingAttr::print(AsmPrinter &printer) const {
   // Print the struct-like storage in dictionary fashion.
-  printer << "encoding<{ dimLevelType = [ ";
+  printer << "<{ dimLevelType = [ ";
   for (unsigned i = 0, e = getDimLevelType().size(); i < e; i++) {
     switch (getDimLevelType()[i]) {
     case DimLevelType::Dense:
@@ -171,6 +171,8 @@ LogicalResult SparseTensorEncodingAttr::verifyEncoding(
   // Check integrity with tensor type specifics. Dimension ordering is optional,
   // but we always should have dimension level types for the full rank.
   unsigned size = shape.size();
+  if (size == 0)
+    return emitError() << "expected non-scalar sparse tensor";
   if (getDimOrdering() && getDimOrdering().getNumResults() != size)
     return emitError() << "expected an affine map of size " << size
                        << " for dimension ordering";
@@ -193,7 +195,7 @@ mlir::sparse_tensor::getSparseTensorEncoding(Type type) {
 
 static LogicalResult isInBounds(Value dim, Value tensor) {
   if (auto constantOp = dim.getDefiningOp<arith::ConstantOp>()) {
-    unsigned d = constantOp.value().cast<IntegerAttr>().getInt();
+    unsigned d = constantOp.getValue().cast<IntegerAttr>().getInt();
     if (d >= tensor.getType().cast<RankedTensorType>().getRank())
       return failure();
   }
@@ -227,7 +229,7 @@ static LogicalResult verify(InitOp op) {
       continue;
     auto constantOp = op.sizes()[i].getDefiningOp<arith::ConstantOp>();
     if (!constantOp ||
-        constantOp.value().cast<IntegerAttr>().getInt() != shape[i])
+        constantOp.getValue().cast<IntegerAttr>().getInt() != shape[i])
       return op.emitError("unexpected mismatch with static dimension size ")
              << shape[i];
   }
@@ -237,7 +239,8 @@ static LogicalResult verify(InitOp op) {
 static LogicalResult verify(ConvertOp op) {
   if (auto tp1 = op.source().getType().dyn_cast<RankedTensorType>()) {
     if (auto tp2 = op.dest().getType().dyn_cast<RankedTensorType>()) {
-      assert(tp1.getRank() == tp2.getRank());
+      if (tp1.getRank() != tp2.getRank())
+        return op.emitError("unexpected conversion mismatch in rank");
       auto shape1 = tp1.getShape();
       auto shape2 = tp2.getShape();
       // Accept size matches between the source and the destination type
@@ -258,12 +261,6 @@ OpFoldResult ConvertOp::fold(ArrayRef<Attribute> operands) {
   if (getType() == source().getType())
     return source();
   return {};
-}
-
-static LogicalResult verify(ReleaseOp op) {
-  if (!getSparseTensorEncoding(op.tensor().getType()))
-    return op.emitError("expected a sparse tensor to release");
-  return success();
 }
 
 static LogicalResult verify(ToPointersOp op) {
@@ -298,9 +295,25 @@ static LogicalResult verify(ToValuesOp op) {
   return success();
 }
 
-static LogicalResult verify(ToTensorOp op) {
-  if (!getSparseTensorEncoding(op.result().getType()))
-    return op.emitError("expected a sparse tensor result");
+//===----------------------------------------------------------------------===//
+// TensorDialect Management Operations.
+//===----------------------------------------------------------------------===//
+
+static LogicalResult verify(LexInsertOp op) {
+  if (!getSparseTensorEncoding(op.tensor().getType()))
+    return op.emitError("expected a sparse tensor for insertion");
+  return success();
+}
+
+static LogicalResult verify(LoadOp op) {
+  if (!getSparseTensorEncoding(op.tensor().getType()))
+    return op.emitError("expected a sparse tensor to materialize");
+  return success();
+}
+
+static LogicalResult verify(ReleaseOp op) {
+  if (!getSparseTensorEncoding(op.tensor().getType()))
+    return op.emitError("expected a sparse tensor to release");
   return success();
 }
 

@@ -173,8 +173,19 @@ static bool checkCompatibility(const InputFile *input) {
   return true;
 }
 
+// This cache mostly exists to store system libraries (and .tbds) as they're
+// loaded, rather than the input archives, which are already cached at a higher
+// level, and other files like the filelist that are only read once.
+// Theoretically this caching could be more efficient by hoisting it, but that
+// would require altering many callers to track the state.
+DenseMap<CachedHashStringRef, MemoryBufferRef> macho::cachedReads;
 // Open a given file path and return it as a memory-mapped file.
 Optional<MemoryBufferRef> macho::readFile(StringRef path) {
+  CachedHashStringRef key(path);
+  auto entry = cachedReads.find(key);
+  if (entry != cachedReads.end())
+    return entry->second;
+
   ErrorOr<std::unique_ptr<MemoryBuffer>> mbOrErr = MemoryBuffer::getFile(path);
   if (std::error_code ec = mbOrErr.getError()) {
     error("cannot open " + path + ": " + ec.message());
@@ -192,7 +203,7 @@ Optional<MemoryBufferRef> macho::readFile(StringRef path) {
       read32be(&hdr->magic) != FAT_MAGIC) {
     if (tar)
       tar->append(relativeToRoot(path), mbref.getBuffer());
-    return mbref;
+    return cachedReads[key] = mbref;
   }
 
   // Object files and archive files may be fat files, which contain multiple
@@ -217,7 +228,8 @@ Optional<MemoryBufferRef> macho::readFile(StringRef path) {
       error(path + ": slice extends beyond end of file");
     if (tar)
       tar->append(relativeToRoot(path), mbref.getBuffer());
-    return MemoryBufferRef(StringRef(buf + offset, size), path.copy(bAlloc));
+    return cachedReads[key] = MemoryBufferRef(StringRef(buf + offset, size),
+                                              path.copy(bAlloc));
   }
 
   error("unable to find matching architecture in " + path);
@@ -235,9 +247,13 @@ InputFile::InputFile(Kind kind, const InterfaceFile &interface)
 // Note that "record" is a term I came up with. In contrast, "literal" is a term
 // used by the Mach-O format.
 static Optional<size_t> getRecordSize(StringRef segname, StringRef name) {
-  if (name == section_names::cfString)
+  if (name == section_names::cfString) {
     if (config->icfLevel != ICFLevel::none && segname == segment_names::data)
       return target->wordSize == 8 ? 32 : 16;
+  } else if (name == section_names::compactUnwind) {
+    if (segname == segment_names::ld)
+      return target->wordSize == 8 ? 32 : 20;
+  }
   return {};
 }
 
@@ -265,7 +281,7 @@ void ObjFile::parseSections(ArrayRef<Section> sections) {
 
     auto splitRecords = [&](int recordSize) -> void {
       subsections.push_back({});
-      if (data.size() == 0)
+      if (data.empty())
         return;
 
       SubsectionMap &subsecMap = subsections.back();
@@ -551,18 +567,23 @@ static macho::Symbol *createDefined(const NList &sym, StringRef name,
     // with ld64's semantics, because it means the non-private-extern
     // definition will continue to take priority if more private extern
     // definitions are encountered. With lld's semantics there's no observable
-    // difference between a symbol that's isWeakDefCanBeHidden or one that's
-    // privateExtern -- neither makes it into the dynamic symbol table. So just
-    // promote isWeakDefCanBeHidden to isPrivateExtern here.
-    if (isWeakDefCanBeHidden)
+    // difference between a symbol that's isWeakDefCanBeHidden(autohide) or one
+    // that's privateExtern -- neither makes it into the dynamic symbol table,
+    // unless the autohide symbol is explicitly exported.
+    // But if a symbol is both privateExtern and autohide then it can't
+    // be exported.
+    // So we nullify the autohide flag when privateExtern is present
+    // and promote the symbol to privateExtern when it is not already.
+    if (isWeakDefCanBeHidden && isPrivateExtern)
+      isWeakDefCanBeHidden = false;
+    else if (isWeakDefCanBeHidden)
       isPrivateExtern = true;
-
     return symtab->addDefined(
         name, isec->getFile(), isec, value, size, sym.n_desc & N_WEAK_DEF,
         isPrivateExtern, sym.n_desc & N_ARM_THUMB_DEF,
-        sym.n_desc & REFERENCED_DYNAMICALLY, sym.n_desc & N_NO_DEAD_STRIP);
+        sym.n_desc & REFERENCED_DYNAMICALLY, sym.n_desc & N_NO_DEAD_STRIP,
+        isWeakDefCanBeHidden);
   }
-
   assert(!isWeakDefCanBeHidden &&
          "weak_def_can_be_hidden on already-hidden symbol?");
   return make<Defined>(
@@ -581,7 +602,8 @@ static macho::Symbol *createAbsolute(const NList &sym, InputFile *file,
     return symtab->addDefined(
         name, file, nullptr, sym.n_value, /*size=*/0,
         /*isWeakDef=*/false, sym.n_type & N_PEXT, sym.n_desc & N_ARM_THUMB_DEF,
-        /*isReferencedDynamically=*/false, sym.n_desc & N_NO_DEAD_STRIP);
+        /*isReferencedDynamically=*/false, sym.n_desc & N_NO_DEAD_STRIP,
+        /*isWeakDefCanBeHidden=*/false);
   }
   return make<Defined>(name, file, nullptr, sym.n_value, /*size=*/0,
                        /*isWeakDef=*/false,
@@ -616,8 +638,7 @@ macho::Symbol *ObjFile::parseNonSectionSymbol(const NList &sym,
   }
 }
 
-template <class NList>
-static bool isUndef(const NList &sym) {
+template <class NList> static bool isUndef(const NList &sym) {
   return (sym.n_type & N_TYPE) == N_UNDF && sym.n_value == 0;
 }
 
@@ -662,11 +683,11 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
     uint64_t sectionAddr = sectionHeaders[i].addr;
     uint32_t sectionAlign = 1u << sectionHeaders[i].align;
 
-    InputSection *isec = subsecMap.back().isec;
-    // __cfstring has already been split into subsections during
+    InputSection *lastIsec = subsecMap.back().isec;
+    // Record-based sections have already been split into subsections during
     // parseSections(), so we simply need to match Symbols to the corresponding
     // subsection here.
-    if (config->icfLevel != ICFLevel::none && isCfStringSection(isec)) {
+    if (getRecordSize(lastIsec->getSegName(), lastIsec->getName())) {
       for (size_t j = 0; j < symbolIndices.size(); ++j) {
         uint32_t symIndex = symbolIndices[j];
         const NList &sym = nList[symIndex];
@@ -674,7 +695,7 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
         uint64_t symbolOffset = sym.n_value - sectionAddr;
         InputSection *isec = findContainingSubsection(subsecMap, &symbolOffset);
         if (symbolOffset != 0) {
-          error(toString(this) + ": __cfstring contains symbol " + name +
+          error(toString(lastIsec) + ":  symbol " + name +
                 " at misaligned offset");
           continue;
         }
@@ -719,7 +740,6 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
       auto *concatIsec = cast<ConcatInputSection>(isec);
 
       auto *nextIsec = make<ConcatInputSection>(*concatIsec);
-      nextIsec->numRefs = 0;
       nextIsec->wasCoalesced = false;
       if (isZeroFill(isec->getFlags())) {
         // Zero-fill sections have NULL data.data() non-zero data.size()
@@ -788,9 +808,12 @@ template <class LP> void ObjFile::parse() {
 
   Architecture arch = getArchitectureFromCpuType(hdr->cputype, hdr->cpusubtype);
   if (arch != config->arch()) {
-    error(toString(this) + " has architecture " + getArchitectureName(arch) +
-          " which is incompatible with target architecture " +
-          getArchitectureName(config->arch()));
+    auto msg = config->errorForArchMismatch
+                   ? static_cast<void (*)(const Twine &)>(error)
+                   : warn;
+    msg(toString(this) + " has architecture " + getArchitectureName(arch) +
+        " which is incompatible with target architecture " +
+        getArchitectureName(config->arch()));
     return;
   }
 
@@ -830,6 +853,7 @@ template <class LP> void ObjFile::parse() {
   parseDebugInfo();
   if (config->emitDataInCodeInfo)
     parseDataInCode();
+  registerCompactUnwind();
 }
 
 void ObjFile::parseDebugInfo() {
@@ -868,6 +892,81 @@ void ObjFile::parseDataInCode() {
                                          const data_in_code_entry &rhs) {
     return lhs.offset < rhs.offset;
   }));
+}
+
+// Create pointers from symbols to their associated compact unwind entries.
+void ObjFile::registerCompactUnwind() {
+  // First, locate the __compact_unwind section.
+  SubsectionMap *cuSubsecMap = nullptr;
+  for (SubsectionMap &map : subsections) {
+    if (map.empty())
+      continue;
+    if (map[0].isec->getSegName() != segment_names::ld)
+      continue;
+    cuSubsecMap = &map;
+    break;
+  }
+  if (!cuSubsecMap)
+    return;
+
+  for (SubsectionEntry &entry : *cuSubsecMap) {
+    ConcatInputSection *isec = cast<ConcatInputSection>(entry.isec);
+    // Hack!! Since each CUE contains a different function address, if ICF
+    // operated naively and compared the entire contents of each CUE, entries
+    // with identical unwind info but belonging to different functions would
+    // never be considered equivalent. To work around this problem, we slice
+    // away the function address here. (Note that we do not adjust the offsets
+    // of the corresponding relocations.) We rely on `relocateCompactUnwind()`
+    // to correctly handle these truncated input sections.
+    isec->data = isec->data.slice(target->wordSize);
+
+    ConcatInputSection *referentIsec;
+    for (auto it = isec->relocs.begin(); it != isec->relocs.end();) {
+      Reloc &r = *it;
+      // We only wish to handle the relocation for CUE::functionAddress.
+      if (r.offset != 0) {
+        ++it;
+        continue;
+      }
+      uint64_t add = r.addend;
+      if (auto *sym = cast_or_null<Defined>(r.referent.dyn_cast<Symbol *>())) {
+        // Check whether the symbol defined in this file is the prevailing one.
+        // Skip if it is e.g. a weak def that didn't prevail.
+        if (sym->getFile() != this) {
+          ++it;
+          continue;
+        }
+        add += sym->value;
+        referentIsec = cast<ConcatInputSection>(sym->isec);
+      } else {
+        referentIsec =
+            cast<ConcatInputSection>(r.referent.dyn_cast<InputSection *>());
+      }
+      if (referentIsec->getSegName() != segment_names::text)
+        error("compact unwind references address in " + toString(referentIsec) +
+              " which is not in segment __TEXT");
+      // The functionAddress relocations are typically section relocations.
+      // However, unwind info operates on a per-symbol basis, so we search for
+      // the function symbol here.
+      auto symIt = llvm::lower_bound(
+          referentIsec->symbols, add,
+          [](Defined *d, uint64_t add) { return d->value < add; });
+      // The relocation should point at the exact address of a symbol (with no
+      // addend).
+      if (symIt == referentIsec->symbols.end() || (*symIt)->value != add) {
+        assert(referentIsec->wasCoalesced);
+        ++it;
+        continue;
+      }
+      (*symIt)->compactUnwind = isec;
+      // Since we've sliced away the functionAddress, we should remove the
+      // corresponding relocation too. Given that clang emits relocations in
+      // reverse order of address, this relocation should be at the end of the
+      // vector for most of our input object files, so this is typically an O(1)
+      // operation.
+      it = isec->relocs.erase(it);
+    }
+  }
 }
 
 // The path can point to either a dylib or a .tbd file.
@@ -1159,7 +1258,7 @@ DylibFile::DylibFile(const InterfaceFile &interface, DylibFile *umbrella,
 void DylibFile::parseReexports(const InterfaceFile &interface) {
   const InterfaceFile *topLevel =
       interface.getParent() == nullptr ? &interface : interface.getParent();
-  for (InterfaceFileRef intfRef : interface.reexportedLibraries()) {
+  for (const InterfaceFileRef &intfRef : interface.reexportedLibraries()) {
     InterfaceFile::const_target_range targets = intfRef.targets();
     if (is_contained(skipPlatformChecks, intfRef.getInstallName()) ||
         is_contained(targets, config->platformInfo.target))
@@ -1356,7 +1455,8 @@ static macho::Symbol *createBitcodeSymbol(const lto::InputFile::Symbol &objSym,
                             /*size=*/0, objSym.isWeak(), isPrivateExtern,
                             /*isThumb=*/false,
                             /*isReferencedDynamically=*/false,
-                            /*noDeadStrip=*/false);
+                            /*noDeadStrip=*/false,
+                            /*isWeakDefCanBeHidden=*/false);
 }
 
 BitcodeFile::BitcodeFile(MemoryBufferRef mb, StringRef archiveName,

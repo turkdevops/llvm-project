@@ -746,9 +746,8 @@ MCSymbol *MachineFunction::addLandingPad(MachineBasicBlock *LandingPad) {
         // Add filters in a list.
         auto *CVal = cast<Constant>(Val);
         SmallVector<const GlobalValue *, 4> FilterList;
-        for (User::op_iterator II = CVal->op_begin(), IE = CVal->op_end();
-             II != IE; ++II)
-          FilterList.push_back(cast<GlobalValue>((*II)->stripPointerCasts()));
+        for (const Use &U : CVal->operands())
+          FilterList.push_back(cast<GlobalValue>(U->stripPointerCasts()));
 
         addFilterTypeInfo(LandingPad, FilterList);
       }
@@ -974,6 +973,9 @@ void MachineFunction::makeDebugValueSubstitution(DebugInstrOperandPair A,
                                                  unsigned Subreg) {
   // Catch any accidental self-loops.
   assert(A.first != B.first);
+  // Don't allow any substitutions _from_ the memory operand number.
+  assert(A.second != DebugOperandMemNumber);
+
   DebugValueSubstitutions.push_back({A, B, Subreg});
 }
 
@@ -1238,6 +1240,9 @@ bool MachineFunction::useDebugInstrRef() const {
 
   return false;
 }
+
+// Use one million as a high / reserved number.
+const unsigned MachineFunction::DebugOperandMemNumber = 1000000;
 
 /// \}
 
