@@ -14,6 +14,8 @@ cmake_minimum_required(VERSION 3.13.4)
 set(CMAKE_MODULE_PATH
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Modules"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../cmake"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/Modules"
   ${CMAKE_MODULE_PATH}
   )
 
@@ -44,17 +46,7 @@ endif()
 if (LIBCXX_STANDALONE_BUILD)
   find_package(Python3 COMPONENTS Interpreter)
   if(NOT Python3_Interpreter_FOUND)
-    message(WARNING "Python3 not found, using python2 as a fallback")
-    find_package(Python2 COMPONENTS Interpreter REQUIRED)
-    if(Python2_VERSION VERSION_LESS 2.7)
-      message(SEND_ERROR "Python 2.7 or newer is required")
-    endif()
-
-    # Treat python2 as python3
-    add_executable(Python3::Interpreter IMPORTED)
-    set_target_properties(Python3::Interpreter PROPERTIES
-      IMPORTED_LOCATION ${Python2_EXECUTABLE})
-    set(Python3_EXECUTABLE ${Python2_EXECUTABLE})
+    message(SEND_ERROR "Python3 not found. Python3 is required")
   endif()
 endif()
 
@@ -612,7 +604,8 @@ function(cxx_add_warning_flags target)
   endif()
   target_add_compile_flags_if_supported(${target} PRIVATE -Wextra -W -Wwrite-strings
                                                           -Wno-unused-parameter -Wno-long-long
-                                                          -Werror=return-type -Wextra-semi -Wundef)
+                                                          -Werror=return-type -Wextra-semi -Wundef
+                                                          -Wformat-nonliteral)
   if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
     target_add_compile_flags_if_supported(${target} PRIVATE
       -Wno-user-defined-literals
@@ -778,6 +771,13 @@ function(cxx_link_system_libraries target)
     target_add_link_flags_if_supported(${target} PRIVATE "-nodefaultlibs")
     target_add_compile_flags_if_supported(${target} PRIVATE "/Zl")
     target_add_link_flags_if_supported(${target} PRIVATE "/nodefaultlib")
+  endif()
+
+  if (LIBCXX_SUPPORTS_UNWINDLIB_NONE_FLAG AND LIBCXXABI_USE_LLVM_UNWINDER)
+    # If we're linking directly against the libunwind that we're building
+    # in the same invocation, don't try to link in the toolchain's
+    # default libunwind (which may be missing still).
+    target_add_link_flags_if_supported(${target} PRIVATE "--unwindlib=none")
   endif()
 
   if (LIBCXX_HAS_SYSTEM_LIB)

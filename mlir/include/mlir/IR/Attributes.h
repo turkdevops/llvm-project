@@ -13,7 +13,10 @@
 #include "llvm/Support/PointerLikeTypeTraits.h"
 
 namespace mlir {
-class Identifier;
+class StringAttr;
+
+// TODO: Remove this when all usages have been replaced with StringAttr.
+using Identifier = StringAttr;
 
 /// Attributes are known-constant values of operations.
 ///
@@ -61,7 +64,7 @@ public:
   TypeID getTypeID() { return impl->getAbstractAttribute().getTypeID(); }
 
   /// Return the type of this attribute.
-  Type getType() const;
+  Type getType() const { return impl->getType(); }
 
   /// Return the context this attribute belongs to.
   MLIRContext *getContext() const;
@@ -126,17 +129,17 @@ template <typename U> U Attribute::cast() const {
 }
 
 inline ::llvm::hash_code hash_value(Attribute arg) {
-  return ::llvm::hash_value(arg.impl);
+  return DenseMapInfo<const Attribute::ImplType *>::getHashValue(arg.impl);
 }
 
 //===----------------------------------------------------------------------===//
 // NamedAttribute
 //===----------------------------------------------------------------------===//
 
-/// NamedAttribute is combination of a name, represented by an Identifier, and a
+/// NamedAttribute is combination of a name, represented by a StringAttr, and a
 /// value, represented by an Attribute. The attribute pointer should always be
 /// non-null.
-using NamedAttribute = std::pair<Identifier, Attribute>;
+using NamedAttribute = std::pair<StringAttr, Attribute>;
 
 bool operator<(const NamedAttribute &lhs, const NamedAttribute &rhs);
 bool operator<(const NamedAttribute &lhs, StringRef rhs);
@@ -196,6 +199,19 @@ template <> struct DenseMapInfo<mlir::Attribute> {
   }
   static bool isEqual(mlir::Attribute LHS, mlir::Attribute RHS) {
     return LHS == RHS;
+  }
+};
+template <typename T>
+struct DenseMapInfo<
+    T, std::enable_if_t<std::is_base_of<mlir::Attribute, T>::value>>
+    : public DenseMapInfo<mlir::Attribute> {
+  static T getEmptyKey() {
+    const void *pointer = llvm::DenseMapInfo<const void *>::getEmptyKey();
+    return T::getFromOpaquePointer(pointer);
+  }
+  static T getTombstoneKey() {
+    const void *pointer = llvm::DenseMapInfo<const void *>::getTombstoneKey();
+    return T::getFromOpaquePointer(pointer);
   }
 };
 

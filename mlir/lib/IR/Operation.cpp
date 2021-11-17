@@ -30,7 +30,7 @@ OperationName::OperationName(StringRef name, MLIRContext *context) {
   if (auto *op = AbstractOperation::lookup(name, context))
     representation = op;
   else
-    representation = Identifier::get(name, context);
+    representation = StringAttr::get(name, context);
 }
 
 /// Return the name of the dialect this operation is registered to.
@@ -51,10 +51,10 @@ StringRef OperationName::getStringRef() const {
 }
 
 /// Return the name of this operation as an identifier. This always succeeds.
-Identifier OperationName::getIdentifier() const {
+StringAttr OperationName::getIdentifier() const {
   if (auto *op = representation.dyn_cast<const AbstractOperation *>())
     return op->name;
-  return representation.get<Identifier>();
+  return representation.get<StringAttr>();
 }
 
 OperationName OperationName::getFromOpaquePointer(const void *pointer) {
@@ -125,9 +125,8 @@ Operation *Operation::create(Location location, OperationName name,
   // into account the size of the operation, its trailing objects, and its
   // prefixed objects.
   size_t byteSize =
-      totalSizeToAlloc<BlockOperand, Region, detail::OperandStorage>(
-          numSuccessors, numRegions, needsOperandStorage ? 1 : 0) +
-      detail::OperandStorage::additionalAllocSize(numOperands);
+      totalSizeToAlloc<detail::OperandStorage, BlockOperand, Region, OpOperand>(
+          needsOperandStorage ? 1 : 0, numSuccessors, numRegions, numOperands);
   size_t prefixByteSize = llvm::alignTo(
       Operation::prefixAllocSize(numTrailingResults, numInlineResults),
       alignof(Operation));
@@ -156,8 +155,10 @@ Operation *Operation::create(Location location, OperationName name,
     new (&op->getRegion(i)) Region(op);
 
   // Initialize the operands.
-  if (needsOperandStorage)
-    new (&op->getOperandStorage()) detail::OperandStorage(op, operands);
+  if (needsOperandStorage) {
+    new (&op->getOperandStorage()) detail::OperandStorage(
+        op, op->getTrailingObjects<OpOperand>(), operands);
+  }
 
   // Initialize the successors.
   auto blockOperands = op->getBlockOperands();
@@ -505,7 +506,7 @@ void Operation::moveAfter(Operation *existingOp) {
 void Operation::moveAfter(Block *block,
                           llvm::iplist<Operation>::iterator iterator) {
   assert(iterator != block->end() && "cannot move after end of block");
-  moveBefore(&*std::next(iterator));
+  moveBefore(block, std::next(iterator));
 }
 
 /// This drops all operand uses from this operation, which is an essential
