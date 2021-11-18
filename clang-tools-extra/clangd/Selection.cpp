@@ -346,7 +346,7 @@ private:
             SM.getTopMacroCallerLoc(Batch.back().location());
         return testTokenRange(SM.getFileOffset(ArgStart),
                               SM.getFileOffset(ArgEnd));
-      } else {
+      } else { // NOLINT(llvm-else-after-return)
         /* fall through and treat as part of the macro body */
       }
     }
@@ -357,8 +357,7 @@ private:
     if (Expansion.first == SelFile)
       // FIXME: also check ( and ) for function-like macros?
       return testToken(Expansion.second);
-    else
-      return NoTokens;
+    return NoTokens;
   }
 
   // Is the closed token range [Begin, End] selected?
@@ -897,7 +896,7 @@ const DeclContext &SelectionTree::Node::getDeclContext() const {
       if (CurrentNode != this)
         if (auto *DC = dyn_cast<DeclContext>(Current))
           return *DC;
-      return *Current->getDeclContext();
+      return *Current->getLexicalDeclContext();
     }
   }
   llvm_unreachable("A tree must always be rooted at TranslationUnitDecl.");

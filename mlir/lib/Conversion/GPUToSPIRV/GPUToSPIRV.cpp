@@ -169,7 +169,7 @@ LogicalResult WorkGroupSizeConversion::matchAndRewrite(
     return failure();
 
   auto workGroupSizeAttr = spirv::lookupLocalWorkGroupSize(op);
-  auto val = workGroupSizeAttr.getValue<int32_t>(index.getValue());
+  auto val = workGroupSizeAttr.getValues<int32_t>()[index.getValue()];
   auto convertedType =
       getTypeConverter()->convertType(op.getResult().getType());
   if (!convertedType)
@@ -296,8 +296,8 @@ LogicalResult GPUFuncOpConversion::matchAndRewrite(
       funcOp, *getTypeConverter(), rewriter, entryPointAttr, argABI);
   if (!newFuncOp)
     return failure();
-  newFuncOp->removeAttr(Identifier::get(
-      gpu::GPUDialect::getKernelFuncAttrName(), rewriter.getContext()));
+  newFuncOp->removeAttr(
+      rewriter.getStringAttr(gpu::GPUDialect::getKernelFuncAttrName()));
   return success();
 }
 
