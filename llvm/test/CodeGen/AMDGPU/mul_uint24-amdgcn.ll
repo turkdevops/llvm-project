@@ -138,17 +138,16 @@ define amdgpu_kernel void @test_umul24_i16_vgpr_sext(i32 addrspace(1)* %out, i16
 ; VI:       ; %bb.0:
 ; VI-NEXT:    s_load_dwordx4 s[4:7], s[0:1], 0x24
 ; VI-NEXT:    v_lshlrev_b32_e32 v0, 1, v0
-; VI-NEXT:    v_mov_b32_e32 v4, 0
 ; VI-NEXT:    s_mov_b32 s3, 0xf000
 ; VI-NEXT:    s_mov_b32 s2, -1
 ; VI-NEXT:    s_waitcnt lgkmcnt(0)
 ; VI-NEXT:    v_mov_b32_e32 v3, s7
 ; VI-NEXT:    v_add_u32_e32 v2, vcc, s6, v0
-; VI-NEXT:    v_addc_u32_e32 v3, vcc, v3, v4, vcc
+; VI-NEXT:    v_addc_u32_e32 v3, vcc, 0, v3, vcc
 ; VI-NEXT:    v_lshlrev_b32_e32 v0, 1, v1
 ; VI-NEXT:    v_mov_b32_e32 v1, s7
 ; VI-NEXT:    v_add_u32_e32 v0, vcc, s6, v0
-; VI-NEXT:    v_addc_u32_e32 v1, vcc, v1, v4, vcc
+; VI-NEXT:    v_addc_u32_e32 v1, vcc, 0, v1, vcc
 ; VI-NEXT:    flat_load_ushort v2, v[2:3]
 ; VI-NEXT:    flat_load_ushort v0, v[0:1]
 ; VI-NEXT:    s_mov_b32 s0, s4
@@ -569,6 +568,37 @@ entry:
   %tmp2 = mul i64 %a_24, %b_24
   store i64 %tmp2, i64 addrspace(1)* %out
   ret void
+}
+
+define i64 @test_umul48_i64(i64 %lhs, i64 %rhs) {
+; GCN-LABEL: test_umul48_i64:
+; GCN:       ; %bb.0:
+; GCN-NEXT:    s_waitcnt vmcnt(0) expcnt(0) lgkmcnt(0)
+; GCN-NEXT:    v_mul_u32_u24_e32 v3, v0, v2
+; GCN-NEXT:    v_mul_hi_u32_u24_e32 v1, v0, v2
+; GCN-NEXT:    v_mov_b32_e32 v0, v3
+; GCN-NEXT:    s_setpc_b64 s[30:31]
+  %lhs24 = and i64 %lhs, 16777215
+  %rhs24 = and i64 %rhs, 16777215
+  %mul = mul i64 %lhs24, %rhs24
+  ret i64 %mul
+}
+
+define <2 x i64> @test_umul48_v2i64(<2 x i64> %lhs, <2 x i64> %rhs) {
+; GCN-LABEL: test_umul48_v2i64:
+; GCN:       ; %bb.0:
+; GCN-NEXT:    s_waitcnt vmcnt(0) expcnt(0) lgkmcnt(0)
+; GCN-NEXT:    v_mul_u32_u24_e32 v5, v0, v4
+; GCN-NEXT:    v_mul_hi_u32_u24_e32 v1, v0, v4
+; GCN-NEXT:    v_mul_u32_u24_e32 v4, v2, v6
+; GCN-NEXT:    v_mul_hi_u32_u24_e32 v3, v2, v6
+; GCN-NEXT:    v_mov_b32_e32 v0, v5
+; GCN-NEXT:    v_mov_b32_e32 v2, v4
+; GCN-NEXT:    s_setpc_b64 s[30:31]
+  %lhs24 = and <2 x i64> %lhs, <i64 16777215, i64 16777215>
+  %rhs24 = and <2 x i64> %rhs, <i64 16777215, i64 16777215>
+  %mul = mul <2 x i64> %lhs24, %rhs24
+  ret <2 x i64> %mul
 }
 
 define amdgpu_kernel void @test_umul24_i64_square(i64 addrspace(1)* %out, [8 x i32], i64 %a) {
