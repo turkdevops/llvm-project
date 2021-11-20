@@ -6,18 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/__support/CPP/Array.h"
 #include "src/string/memory_utils/elements.h"
-#include "utils/CPP/Array.h"
 #include "utils/UnitTest/Test.h"
 
 namespace __llvm_libc {
 
 // Registering Types
 using FixedSizeTypes = testing::TypeList<
-#ifdef __SSE2__
+#if defined(__SSE2__)
     x86::Vector128, //
 #endif              // __SSE2__
-#ifdef __AVX2__
+#if defined(__AVX2__)
     x86::Vector256, //
 #endif              // __AVX2__
 #if defined(__AVX512F__) and defined(__AVX512BW__)

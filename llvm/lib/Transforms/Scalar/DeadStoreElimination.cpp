@@ -205,39 +205,6 @@ static bool hasAnalyzableMemoryWrite(Instruction *I,
   return false;
 }
 
-/// Return a Location stored to by the specified instruction. If isRemovable
-/// returns true, this function and getLocForRead completely describe the memory
-/// operations for this instruction.
-static MemoryLocation getLocForWrite(Instruction *Inst,
-                                     const TargetLibraryInfo &TLI) {
-  if (StoreInst *SI = dyn_cast<StoreInst>(Inst))
-    return MemoryLocation::get(SI);
-
-  // memcpy/memmove/memset.
-  if (auto *MI = dyn_cast<AnyMemIntrinsic>(Inst))
-    return MemoryLocation::getForDest(MI);
-
-  if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(Inst)) {
-    switch (II->getIntrinsicID()) {
-    default:
-      return MemoryLocation(); // Unhandled intrinsic.
-    case Intrinsic::init_trampoline:
-      return MemoryLocation::getAfter(II->getArgOperand(0));
-    case Intrinsic::masked_store:
-      return MemoryLocation::getForArgument(II, 1, TLI);
-    case Intrinsic::lifetime_end: {
-      uint64_t Len = cast<ConstantInt>(II->getArgOperand(0))->getZExtValue();
-      return MemoryLocation(II->getArgOperand(1), Len);
-    }
-    }
-  }
-  if (auto *CB = dyn_cast<CallBase>(Inst))
-    // All the supported TLI functions so far happen to have dest as their
-    // first argument.
-    return MemoryLocation::getAfter(CB->getArgOperand(0));
-  return MemoryLocation();
-}
-
 /// If the value of this instruction and the memory it writes to is unused, may
 /// we delete this instruction?
 static bool isRemovable(Instruction *I) {
@@ -729,28 +696,6 @@ static bool tryToShortenBegin(Instruction *DeadI,
   return false;
 }
 
-static bool removePartiallyOverlappedStores(const DataLayout &DL,
-                                            InstOverlapIntervalsTy &IOL,
-                                            const TargetLibraryInfo &TLI) {
-  bool Changed = false;
-  for (auto OI : IOL) {
-    Instruction *DeadI = OI.first;
-    MemoryLocation Loc = getLocForWrite(DeadI, TLI);
-    assert(isRemovable(DeadI) && "Expect only removable instruction");
-
-    const Value *Ptr = Loc.Ptr->stripPointerCasts();
-    int64_t DeadStart = 0;
-    uint64_t DeadSize = Loc.Size.getValue();
-    GetPointerBaseWithConstantOffset(Ptr, DeadStart, DL);
-    OverlapIntervalsTy &IntervalMap = OI.second;
-    Changed |= tryToShortenEnd(DeadI, IntervalMap, DeadStart, DeadSize);
-    if (IntervalMap.empty())
-      continue;
-    Changed |= tryToShortenBegin(DeadI, IntervalMap, DeadStart, DeadSize);
-  }
-  return Changed;
-}
-
 static Constant *
 tryToMergePartialOverlappingStores(StoreInst *KillingI, StoreInst *DeadI,
                                    int64_t KillingOffset, int64_t DeadOffset,
@@ -1114,8 +1059,13 @@ struct DSEState {
       LibFunc LF;
       if (TLI.getLibFunc(*CB, LF) && TLI.has(LF)) {
         switch (LF) {
-        case LibFunc_strcpy:
         case LibFunc_strncpy:
+          if (const auto *Len = dyn_cast<ConstantInt>(CB->getArgOperand(2)))
+            return MemoryLocation(CB->getArgOperand(0),
+                                  LocationSize::precise(Len->getZExtValue()),
+                                  CB->getAAMetadata());
+          LLVM_FALLTHROUGH;
+        case LibFunc_strcpy:
         case LibFunc_strcat:
         case LibFunc_strncat:
           return {MemoryLocation::getAfter(CB->getArgOperand(0))};
@@ -1941,6 +1891,76 @@ struct DSEState {
 
     return false;
   }
+
+  bool removePartiallyOverlappedStores(InstOverlapIntervalsTy &IOL) {
+    bool Changed = false;
+    for (auto OI : IOL) {
+      Instruction *DeadI = OI.first;
+      MemoryLocation Loc = *getLocForWriteEx(DeadI);
+      assert(isRemovable(DeadI) && "Expect only removable instruction");
+
+      const Value *Ptr = Loc.Ptr->stripPointerCasts();
+      int64_t DeadStart = 0;
+      uint64_t DeadSize = Loc.Size.getValue();
+      GetPointerBaseWithConstantOffset(Ptr, DeadStart, DL);
+      OverlapIntervalsTy &IntervalMap = OI.second;
+      Changed |= tryToShortenEnd(DeadI, IntervalMap, DeadStart, DeadSize);
+      if (IntervalMap.empty())
+        continue;
+      Changed |= tryToShortenBegin(DeadI, IntervalMap, DeadStart, DeadSize);
+    }
+    return Changed;
+  }
+
+  /// Eliminates writes to locations where the value that is being written
+  /// is already stored at the same location.
+  bool eliminateRedundantStoresOfExistingValues() {
+    bool MadeChange = false;
+    LLVM_DEBUG(dbgs() << "Trying to eliminate MemoryDefs that write the "
+                         "already existing value\n");
+    for (auto *Def : MemDefs) {
+      if (SkipStores.contains(Def) || MSSA.isLiveOnEntryDef(Def) ||
+          !isRemovable(Def->getMemoryInst()))
+        continue;
+      auto *UpperDef = dyn_cast<MemoryDef>(Def->getDefiningAccess());
+      if (!UpperDef || MSSA.isLiveOnEntryDef(UpperDef))
+        continue;
+
+      Instruction *DefInst = Def->getMemoryInst();
+      Instruction *UpperInst = UpperDef->getMemoryInst();
+      auto IsRedundantStore = [this, DefInst,
+                               UpperInst](MemoryLocation UpperLoc) {
+        if (DefInst->isIdenticalTo(UpperInst))
+          return true;
+        if (auto *MemSetI = dyn_cast<MemSetInst>(UpperInst)) {
+          if (auto *SI = dyn_cast<StoreInst>(DefInst)) {
+            auto MaybeDefLoc = getLocForWriteEx(DefInst);
+            if (!MaybeDefLoc)
+              return false;
+            int64_t InstWriteOffset = 0;
+            int64_t DepWriteOffset = 0;
+            auto OR = isOverwrite(UpperInst, DefInst, UpperLoc, *MaybeDefLoc,
+                                  InstWriteOffset, DepWriteOffset);
+            Value *StoredByte = isBytewiseValue(SI->getValueOperand(), DL);
+            return StoredByte && StoredByte == MemSetI->getOperand(1) &&
+                   OR == OW_Complete;
+          }
+        }
+        return false;
+      };
+
+      auto MaybeUpperLoc = getLocForWriteEx(UpperInst);
+      if (!MaybeUpperLoc || !IsRedundantStore(*MaybeUpperLoc) ||
+          isReadClobber(*MaybeUpperLoc, DefInst))
+        continue;
+      LLVM_DEBUG(dbgs() << "DSE: Remove No-Op Store:\n  DEAD: " << *DefInst
+                        << '\n');
+      deleteDeadInstruction(DefInst);
+      NumRedundantStores++;
+      MadeChange = true;
+    }
+    return MadeChange;
+  }
 };
 
 static bool eliminateDeadStores(Function &F, AliasAnalysis &AA, MemorySSA &MSSA,
@@ -2104,8 +2124,9 @@ static bool eliminateDeadStores(Function &F, AliasAnalysis &AA, MemorySSA &MSSA,
 
   if (EnablePartialOverwriteTracking)
     for (auto &KV : State.IOLs)
-      MadeChange |= removePartiallyOverlappedStores(State.DL, KV.second, TLI);
+      MadeChange |= State.removePartiallyOverlappedStores(KV.second);
 
+  MadeChange |= State.eliminateRedundantStoresOfExistingValues();
   MadeChange |= State.eliminateDeadWritesAtEndOfFunction();
   return MadeChange;
 }
