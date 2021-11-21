@@ -129,7 +129,7 @@ void NormalizeMemRefs::setCalleesAndCallersNonNormalizable(
 
   // Functions called by this function.
   funcOp.walk([&](CallOp callOp) {
-    StringAttr callee = callOp.getCalleeAttr();
+    StringAttr callee = callOp.getCalleeAttr().getAttr();
     for (FuncOp &funcOp : normalizableFuncs) {
       // We compare FuncOp and callee's name.
       if (callee == funcOp.getNameAttr()) {
@@ -460,7 +460,6 @@ void NormalizeMemRefs::normalizeFuncOpMemRefs(FuncOp funcOp,
       MemRefType newMemRefType = normalizeMemRefType(memrefType, b,
                                                      /*numSymbolicOperands=*/0);
       resultTypes.push_back(newMemRefType);
-      continue;
     }
 
     FunctionType newFuncType =
