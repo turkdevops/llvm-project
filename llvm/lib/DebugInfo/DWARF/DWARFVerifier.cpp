@@ -171,15 +171,16 @@ bool DWARFVerifier::verifyName(const DWARFDie &Die) {
   std::string OriginalFullName;
   Die.getFullName(OS, &OriginalFullName);
   OS.flush();
-  if (!OriginalFullName.empty() && OriginalFullName != ReconstructedName) {
-    error() << "Simplified template DW_AT_name could not be reconstituted:\n"
-            << formatv("         original: {0}\n"
-                       "    reconstituted: {1}\n",
-                       OriginalFullName, ReconstructedName);
-    dump(Die) << '\n';
-    dump(Die.getDwarfUnit()->getUnitDIE()) << '\n';
-  }
-  return 0;
+  if (OriginalFullName.empty() || OriginalFullName == ReconstructedName)
+    return 0;
+
+  error() << "Simplified template DW_AT_name could not be reconstituted:\n"
+          << formatv("         original: {0}\n"
+                     "    reconstituted: {1}\n",
+                     OriginalFullName, ReconstructedName);
+  dump(Die) << '\n';
+  dump(Die.getDwarfUnit()->getUnitDIE()) << '\n';
+  return 1;
 }
 
 unsigned DWARFVerifier::verifyUnitContents(DWARFUnit &Unit,
@@ -551,9 +552,10 @@ unsigned DWARFVerifier::verifyDebugInfoAttribute(const DWARFDie &Die,
         DataExtractor Data(toStringRef(Entry.Expr), DCtx.isLittleEndian(), 0);
         DWARFExpression Expression(Data, U->getAddressByteSize(),
                                    U->getFormParams().Format);
-        bool Error = any_of(Expression, [](DWARFExpression::Operation &Op) {
-          return Op.isError();
-        });
+        bool Error =
+            any_of(Expression, [](const DWARFExpression::Operation &Op) {
+              return Op.isError();
+            });
         if (Error || !Expression.verify(U))
           ReportError("DIE contains invalid DWARF expression:");
       }
@@ -1287,16 +1289,14 @@ DWARFVerifier::verifyNameIndexAbbrevs(const DWARFDebugNames::NameIndex &NI) {
 static SmallVector<StringRef, 2> getNames(const DWARFDie &DIE,
                                           bool IncludeLinkageName = true) {
   SmallVector<StringRef, 2> Result;
-  if (const char *Str = DIE.getName(DINameKind::ShortName))
+  if (const char *Str = DIE.getShortName())
     Result.emplace_back(Str);
   else if (DIE.getTag() == dwarf::DW_TAG_namespace)
     Result.emplace_back("(anonymous namespace)");
 
   if (IncludeLinkageName) {
-    if (const char *Str = DIE.getName(DINameKind::LinkageName)) {
-      if (Result.empty() || Result[0] != Str)
-        Result.emplace_back(Str);
-    }
+    if (const char *Str = DIE.getLinkageName())
+      Result.emplace_back(Str);
   }
 
   return Result;
@@ -1399,11 +1399,12 @@ static bool isVariableIndexable(const DWARFDie &Die, DWARFContext &DCtx) {
                        U->getAddressByteSize());
     DWARFExpression Expression(Data, U->getAddressByteSize(),
                                U->getFormParams().Format);
-    bool IsInteresting = any_of(Expression, [](DWARFExpression::Operation &Op) {
-      return !Op.isError() && (Op.getCode() == DW_OP_addr ||
-                               Op.getCode() == DW_OP_form_tls_address ||
-                               Op.getCode() == DW_OP_GNU_push_tls_address);
-    });
+    bool IsInteresting =
+        any_of(Expression, [](const DWARFExpression::Operation &Op) {
+          return !Op.isError() && (Op.getCode() == DW_OP_addr ||
+                                   Op.getCode() == DW_OP_form_tls_address ||
+                                   Op.getCode() == DW_OP_GNU_push_tls_address);
+        });
     if (IsInteresting)
       return true;
   }
