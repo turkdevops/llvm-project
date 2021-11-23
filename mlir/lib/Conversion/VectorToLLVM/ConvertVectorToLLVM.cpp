@@ -14,8 +14,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
-#include "mlir/Dialect/Vector/VectorOps.h"
-#include "mlir/Dialect/Vector/VectorRewritePatterns.h"
+#include "mlir/Dialect/Vector/VectorTransforms.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Support/MathExtras.h"
 #include "mlir/Target/LLVMIR/TypeToLLVM.h"
@@ -41,6 +40,7 @@ static Value insertOne(ConversionPatternRewriter &rewriter,
                        LLVMTypeConverter &typeConverter, Location loc,
                        Value val1, Value val2, Type llvmType, int64_t rank,
                        int64_t pos) {
+  assert(rank > 0 && "0-D vector corner case should have been handled already");
   if (rank == 1) {
     auto idxType = rewriter.getIndexType();
     auto constant = rewriter.create<LLVM::ConstantOp>(
@@ -57,6 +57,7 @@ static Value insertOne(ConversionPatternRewriter &rewriter,
 static Value extractOne(ConversionPatternRewriter &rewriter,
                         LLVMTypeConverter &typeConverter, Location loc,
                         Value val, Type llvmType, int64_t rank, int64_t pos) {
+  assert(rank > 0 && "0-D vector corner case should have been handled already");
   if (rank == 1) {
     auto idxType = rewriter.getIndexType();
     auto constant = rewriter.create<LLVM::ConstantOp>(
@@ -504,7 +505,6 @@ public:
 
     // For all other cases, insert the individual values individually.
     Type eltType;
-    llvm::errs() << llvmType << "\n";
     if (auto arrayType = llvmType.dyn_cast<LLVM::LLVMArrayType>())
       eltType = arrayType.getElementType();
     else
@@ -543,6 +543,17 @@ public:
     // Bail if result type cannot be lowered.
     if (!llvmType)
       return failure();
+
+    if (vectorType.getRank() == 0) {
+      Location loc = extractEltOp.getLoc();
+      auto idxType = rewriter.getIndexType();
+      auto zero = rewriter.create<LLVM::ConstantOp>(
+          loc, typeConverter->convertType(idxType),
+          rewriter.getIntegerAttr(idxType, 0));
+      rewriter.replaceOpWithNewOp<LLVM::ExtractElementOp>(
+          extractEltOp, llvmType, adaptor.vector(), zero);
+      return success();
+    }
 
     rewriter.replaceOpWithNewOp<LLVM::ExtractElementOp>(
         extractEltOp, llvmType, adaptor.vector(), adaptor.position());
@@ -652,6 +663,17 @@ public:
     if (!llvmType)
       return failure();
 
+    if (vectorType.getRank() == 0) {
+      Location loc = insertEltOp.getLoc();
+      auto idxType = rewriter.getIndexType();
+      auto zero = rewriter.create<LLVM::ConstantOp>(
+          loc, typeConverter->convertType(idxType),
+          rewriter.getIntegerAttr(idxType, 0));
+      rewriter.replaceOpWithNewOp<LLVM::InsertElementOp>(
+          insertEltOp, llvmType, adaptor.dest(), adaptor.source(), zero);
+      return success();
+    }
+
     rewriter.replaceOpWithNewOp<LLVM::InsertElementOp>(
         insertEltOp, llvmType, adaptor.dest(), adaptor.source(),
         adaptor.position());
@@ -753,6 +775,12 @@ public:
 class VectorFMAOpNDRewritePattern : public OpRewritePattern<FMAOp> {
 public:
   using OpRewritePattern<FMAOp>::OpRewritePattern;
+
+  void initialize() {
+    // This pattern recursively unpacks one dimension at a time. The recursion
+    // bounded as the rank is strictly decreasing.
+    setHasBoundedRewriteRecursion();
+  }
 
   LogicalResult matchAndRewrite(FMAOp op,
                                 PatternRewriter &rewriter) const override {

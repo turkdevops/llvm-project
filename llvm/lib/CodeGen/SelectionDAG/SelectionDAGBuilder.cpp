@@ -4336,9 +4336,7 @@ void SelectionDAGBuilder::visitMaskedStore(const CallInst &I,
 
   MachineMemOperand *MMO = DAG.getMachineFunction().getMachineMemOperand(
       MachinePointerInfo(PtrOperand), MachineMemOperand::MOStore,
-      // TODO: Make MachineMemOperands aware of scalable
-      // vectors.
-      VT.getStoreSize().getKnownMinSize(), *Alignment, I.getAAMetadata());
+      MemoryLocation::UnknownSize, *Alignment, I.getAAMetadata());
   SDValue StoreNode =
       DAG.getMaskedStore(getMemoryRoot(), sdl, Src0, Ptr, Offset, Mask, VT, MMO,
                          ISD::UNINDEXED, false /* Truncating */, IsCompressing);
@@ -4496,22 +4494,14 @@ void SelectionDAGBuilder::visitMaskedLoad(const CallInst &I, bool IsExpanding) {
   const MDNode *Ranges = I.getMetadata(LLVMContext::MD_range);
 
   // Do not serialize masked loads of constant memory with anything.
-  MemoryLocation ML;
-  if (VT.isScalableVector())
-    ML = MemoryLocation::getAfter(PtrOperand);
-  else
-    ML = MemoryLocation(PtrOperand, LocationSize::precise(
-                           DAG.getDataLayout().getTypeStoreSize(I.getType())),
-                           AAInfo);
+  MemoryLocation ML = MemoryLocation::getAfter(PtrOperand, AAInfo);
   bool AddToChain = !AA || !AA->pointsToConstantMemory(ML);
 
   SDValue InChain = AddToChain ? DAG.getRoot() : DAG.getEntryNode();
 
   MachineMemOperand *MMO = DAG.getMachineFunction().getMachineMemOperand(
       MachinePointerInfo(PtrOperand), MachineMemOperand::MOLoad,
-      // TODO: Make MachineMemOperands aware of scalable
-      // vectors.
-      VT.getStoreSize().getKnownMinSize(), *Alignment, AAInfo, Ranges);
+      MemoryLocation::UnknownSize, *Alignment, AAInfo, Ranges);
 
   SDValue Load =
       DAG.getMaskedLoad(VT, sdl, InChain, Ptr, Offset, Mask, Src0, VT, MMO,
@@ -7314,9 +7304,9 @@ void SelectionDAGBuilder::visitConstrainedFPIntrinsic(
 static unsigned getISDForVPIntrinsic(const VPIntrinsic &VPIntrin) {
   Optional<unsigned> ResOPC;
   switch (VPIntrin.getIntrinsicID()) {
-#define BEGIN_REGISTER_VP_INTRINSIC(INTRIN, ...) case Intrinsic::INTRIN:
-#define BEGIN_REGISTER_VP_SDNODE(VPSDID, ...) ResOPC = ISD::VPSDID;
-#define END_REGISTER_VP_INTRINSIC(...) break;
+#define BEGIN_REGISTER_VP_INTRINSIC(VPID, ...) case Intrinsic::VPID:
+#define BEGIN_REGISTER_VP_SDNODE(VPSD, ...) ResOPC = ISD::VPSD;
+#define END_REGISTER_VP_INTRINSIC(VPID) break;
 #include "llvm/IR/VPIntrinsics.def"
   }
 
@@ -8392,9 +8382,10 @@ static SDValue getAddressForMemoryInput(SDValue Chain, const SDLoc &Location,
 ///
 ///   OpInfo describes the operand
 ///   RefOpInfo describes the matching operand if any, the operand otherwise
-static void GetRegistersForValue(SelectionDAG &DAG, const SDLoc &DL,
-                                 SDISelAsmOperandInfo &OpInfo,
-                                 SDISelAsmOperandInfo &RefOpInfo) {
+static llvm::Optional<unsigned>
+getRegistersForValue(SelectionDAG &DAG, const SDLoc &DL,
+                     SDISelAsmOperandInfo &OpInfo,
+                     SDISelAsmOperandInfo &RefOpInfo) {
   LLVMContext &Context = *DAG.getContext();
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
 
@@ -8404,7 +8395,7 @@ static void GetRegistersForValue(SelectionDAG &DAG, const SDLoc &DL,
 
   // No work to do for memory operations.
   if (OpInfo.ConstraintType == TargetLowering::C_Memory)
-    return;
+    return None;
 
   // If this is a constraint for a single physreg, or a constraint for a
   // register class, find it.
@@ -8414,7 +8405,7 @@ static void GetRegistersForValue(SelectionDAG &DAG, const SDLoc &DL,
       &TRI, RefOpInfo.ConstraintCode, RefOpInfo.ConstraintVT);
   // RC is unset only on failure. Return immediately.
   if (!RC)
-    return;
+    return None;
 
   // Get the actual register value type.  This is important, because the user
   // may have asked for (e.g.) the AX register in i32 type.  We need to
@@ -8459,7 +8450,7 @@ static void GetRegistersForValue(SelectionDAG &DAG, const SDLoc &DL,
   // No need to allocate a matching input constraint since the constraint it's
   // matching to has already been allocated.
   if (OpInfo.isMatchingInputConstraint())
-    return;
+    return None;
 
   EVT ValueVT = OpInfo.ConstraintVT;
   if (OpInfo.ConstraintVT == MVT::Other)
@@ -8482,8 +8473,12 @@ static void GetRegistersForValue(SelectionDAG &DAG, const SDLoc &DL,
 
   // Do not check for single registers.
   if (AssignedReg) {
-      for (; *I != AssignedReg; ++I)
-        assert(I != RC->end() && "AssignedReg should be member of RC");
+    I = std::find(I, RC->end(), AssignedReg);
+    if (I == RC->end()) {
+      // RC does not contain the selected register, which indicates a
+      // mismatch between the register and the required type/bitwidth.
+      return {AssignedReg};
+    }
   }
 
   for (; NumRegs; --NumRegs, ++I) {
@@ -8493,6 +8488,7 @@ static void GetRegistersForValue(SelectionDAG &DAG, const SDLoc &DL,
   }
 
   OpInfo.AssignedRegs = RegsForValue(Regs, RegVT, ValueVT);
+  return None;
 }
 
 static unsigned
@@ -8726,7 +8722,18 @@ void SelectionDAGBuilder::visitInlineAsm(const CallBase &Call,
         OpInfo.isMatchingInputConstraint()
             ? ConstraintOperands[OpInfo.getMatchedOperand()]
             : OpInfo;
-    GetRegistersForValue(DAG, getCurSDLoc(), OpInfo, RefOpInfo);
+    const auto RegError =
+        getRegistersForValue(DAG, getCurSDLoc(), OpInfo, RefOpInfo);
+    if (RegError.hasValue()) {
+      const MachineFunction &MF = DAG.getMachineFunction();
+      const TargetRegisterInfo &TRI = *MF.getSubtarget().getRegisterInfo();
+      const char *RegName = TRI.getName(RegError.getValue());
+      emitInlineAsmError(Call, "register '" + Twine(RegName) +
+                                   "' allocated for constraint '" +
+                                   Twine(OpInfo.ConstraintCode) +
+                                   "' does not match required type");
+      return;
+    }
 
     auto DetectWriteToReservedRegister = [&]() {
       const MachineFunction &MF = DAG.getMachineFunction();
