@@ -765,10 +765,7 @@ unsigned HexagonGenInsert::distance(const MachineBasicBlock *FromB,
 
   unsigned MaxD = 0;
 
-  using pred_iterator = MachineBasicBlock::const_pred_iterator;
-
-  for (pred_iterator I = ToB->pred_begin(), E = ToB->pred_end(); I != E; ++I) {
-    const MachineBasicBlock *PB = *I;
+  for (const MachineBasicBlock *PB : ToB->predecessors()) {
     // Skip back edges. Also, if FromB is a predecessor of ToB, the distance
     // along that path will be 0, and we don't need to do any calculations
     // on it.
@@ -945,12 +942,11 @@ void HexagonGenInsert::collectInBlock(MachineBasicBlock *B,
   // can remove them from the list of available registers once all DT
   // successors have been processed.
   RegisterSet BlockDefs, InsDefs;
-  for (MachineBasicBlock::iterator I = B->begin(), E = B->end(); I != E; ++I) {
-    MachineInstr *MI = &*I;
+  for (MachineInstr &MI : *B) {
     InsDefs.clear();
-    getInstrDefs(MI, InsDefs);
+    getInstrDefs(&MI, InsDefs);
     // Leave those alone. They are more transparent than "insert".
-    bool Skip = MI->isCopy() || MI->isRegSequence();
+    bool Skip = MI.isCopy() || MI.isRegSequence();
 
     if (!Skip) {
       // Visit all defined registers, and attempt to find the corresponding
@@ -1504,7 +1500,7 @@ bool HexagonGenInsert::runOnMachineFunction(MachineFunction &MF) {
   bool Timing = OptTiming, TimingDetail = Timing && OptTimingDetail;
   bool Changed = false;
 
-  // Sanity check: one, but not both.
+  // Verify: one, but not both.
   assert(!OptSelectAll0 || !OptSelectHas0);
 
   IFMap.clear();

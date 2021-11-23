@@ -67,7 +67,7 @@ std::unique_ptr<Pass> createLinalgComprehensiveModuleBufferizePass();
 /// buffers instead.
 std::unique_ptr<OperationPass<FuncOp>> createLinalgBufferizePass();
 
-/// Create a pass to conver named Linalg operations to Linalg generic
+/// Create a pass to convert named Linalg operations to Linalg generic
 /// operations.
 std::unique_ptr<OperationPass<FuncOp>> createLinalgGeneralizationPass();
 
@@ -75,16 +75,26 @@ std::unique_ptr<OperationPass<FuncOp>> createLinalgGeneralizationPass();
 /// work on primitive types, if possible.
 std::unique_ptr<Pass> createLinalgDetensorizePass();
 
-/// Create a pass to tile a LinalgOp and fuse its producers.
-std::unique_ptr<OperationPass<FuncOp>> createLinalgTileAndFuseTensorOpsPass();
-
 //===----------------------------------------------------------------------===//
 /// Linalg strategy passes.
 //===----------------------------------------------------------------------===//
+/// Create a LinalgStrategyTileAndFusePass.
+std::unique_ptr<OperationPass<FuncOp>> createLinalgStrategyTileAndFusePass(
+    StringRef opName = "", linalg::LinalgTilingAndFusionOptions opt = {},
+    linalg::LinalgTransformationFilter filter =
+        linalg::LinalgTransformationFilter());
+
 /// Create a LinalgStrategyTilePass.
 std::unique_ptr<OperationPass<FuncOp>> createLinalgStrategyTilePass(
     StringRef opName = "",
     linalg::LinalgTilingOptions opt = linalg::LinalgTilingOptions(),
+    linalg::LinalgTransformationFilter filter =
+        linalg::LinalgTransformationFilter());
+
+/// Create a LinalgStrategyPadPass.
+std::unique_ptr<OperationPass<FuncOp>> createLinalgStrategyPadPass(
+    StringRef opName = "",
+    linalg::LinalgPaddingOptions opt = linalg::LinalgPaddingOptions(),
     linalg::LinalgTransformationFilter filter =
         linalg::LinalgTransformationFilter());
 
@@ -100,6 +110,11 @@ std::unique_ptr<OperationPass<FuncOp>>
 createLinalgStrategyGeneralizePass(StringRef opName = "",
                                    linalg::LinalgTransformationFilter filter =
                                        linalg::LinalgTransformationFilter());
+
+/// Create a LinalgStrategyDecomposePass.
+// TODO: atm this is applied to all supported ops. If/when we need finer control
+// this should be exposed with an opName + filter and a proper pattern.
+std::unique_ptr<OperationPass<FuncOp>> createLinalgStrategyDecomposePass();
 
 /// Create a LinalgStrategyInterchangePass.
 std::unique_ptr<OperationPass<FuncOp>>
