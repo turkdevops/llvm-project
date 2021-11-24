@@ -136,6 +136,10 @@ private:
   bool isUniformLoad(const SDNode *N) const;
   bool isUniformBr(const SDNode *N) const;
 
+  // Returns true if ISD::AND SDNode `N`'s masking of the shift amount operand's
+  // `ShAmtBits` bits is unneeded.
+  bool isUnneededShiftMask(const SDNode *N, unsigned ShAmtBits) const;
+
   bool isBaseWithConstantOffset64(SDValue Addr, SDValue &LHS,
                                   SDValue &RHS) const;
 
@@ -233,9 +237,8 @@ private:
   void SelectMAD_64_32(SDNode *N);
   void SelectFMA_W_CHAIN(SDNode *N);
   void SelectFMUL_W_CHAIN(SDNode *N);
-
-  SDNode *getS_BFE(unsigned Opcode, const SDLoc &DL, SDValue Val,
-                   uint32_t Offset, uint32_t Width);
+  SDNode *getBFE32(bool IsSigned, const SDLoc &DL, SDValue Val, uint32_t Offset,
+                   uint32_t Width);
   void SelectS_BFEFromShifts(SDNode *N);
   void SelectS_BFE(SDNode *N);
   bool isCBranchSCC(const SDNode *N) const;
