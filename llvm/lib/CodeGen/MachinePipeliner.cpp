@@ -385,7 +385,7 @@ void MachinePipeliner::preprocessPhiNodes(MachineBasicBlock &B) {
   MachineRegisterInfo &MRI = MF->getRegInfo();
   SlotIndexes &Slots = *getAnalysis<LiveIntervals>().getSlotIndexes();
 
-  for (MachineInstr &PI : make_range(B.begin(), B.getFirstNonPHI())) {
+  for (MachineInstr &PI : B.phis()) {
     MachineOperand &DefOp = PI.getOperand(0);
     assert(DefOp.getSubReg() == 0);
     auto *RC = MRI.getRegClass(DefOp.getReg());
@@ -2546,8 +2546,7 @@ void SMSchedule::orderDependence(SwingSchedulerDAG *SSD, SUnit *SU,
   unsigned Pos = 0;
   for (std::deque<SUnit *>::iterator I = Insts.begin(), E = Insts.end(); I != E;
        ++I, ++Pos) {
-    for (unsigned i = 0, e = MI->getNumOperands(); i < e; ++i) {
-      MachineOperand &MO = MI->getOperand(i);
+    for (MachineOperand &MO : MI->operands()) {
       if (!MO.isReg() || !Register::isVirtualRegister(MO.getReg()))
         continue;
 
