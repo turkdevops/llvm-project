@@ -128,6 +128,38 @@ MemoryLocation MemoryLocation::getForDest(const AnyMemIntrinsic *MI) {
   return MemoryLocation(MI->getRawDest(), Size, MI->getAAMetadata());
 }
 
+Optional<MemoryLocation>
+MemoryLocation::getForDest(const CallBase *CB, const TargetLibraryInfo &TLI) {
+  if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(CB)) {
+    if (auto *MemInst = dyn_cast<AnyMemIntrinsic>(CB))
+      return getForDest(MemInst);
+
+    switch (II->getIntrinsicID()) {
+    default:
+      return None;
+    case Intrinsic::init_trampoline:
+      return MemoryLocation::getForArgument(CB, 0, TLI);
+    case Intrinsic::masked_store:
+      return MemoryLocation::getForArgument(CB, 1, TLI);
+    }
+  }
+
+  LibFunc LF;
+  if (TLI.getLibFunc(*CB, LF) && TLI.has(LF)) {
+    switch (LF) {
+    case LibFunc_strncpy:
+    case LibFunc_strcpy:
+    case LibFunc_strcat:
+    case LibFunc_strncat:
+      return getForArgument(CB, 0, &TLI);
+    default:
+      break;
+    }
+  }
+
+  return None;
+}
+
 MemoryLocation MemoryLocation::getForArgument(const CallBase *Call,
                                               unsigned ArgIdx,
                                               const TargetLibraryInfo *TLI) {
@@ -213,6 +245,34 @@ MemoryLocation MemoryLocation::getForArgument(const CallBase *Call,
   LibFunc F;
   if (TLI && TLI->getLibFunc(*Call, F) && TLI->has(F)) {
     switch (F) {
+    case LibFunc_strcpy:
+    case LibFunc_strcat:
+    case LibFunc_strncat:
+      assert((ArgIdx == 0 || ArgIdx == 1) && "Invalid argument index for str function");
+      return MemoryLocation::getAfter(Arg, AATags);
+
+    case LibFunc_memset_chk: {
+      assert(ArgIdx == 0 && "Invalid argument index for memset_chk");
+      LocationSize Size = LocationSize::afterPointer();
+      if (const auto *Len = dyn_cast<ConstantInt>(Call->getArgOperand(2))) {
+        // memset_chk writes at most Len bytes. It may write less, if Len
+        // exceeds the specified max size and aborts.
+        Size = LocationSize::upperBound(Len->getZExtValue());
+      }
+      return MemoryLocation(Arg, Size, AATags);
+    }
+    case LibFunc_strncpy: {
+      assert((ArgIdx == 0 || ArgIdx == 1) &&
+             "Invalid argument index for strncpy");
+      LocationSize Size = LocationSize::afterPointer();
+      if (const auto *Len = dyn_cast<ConstantInt>(Call->getArgOperand(2))) {
+        // strncpy is guaranteed to write Len bytes, but only reads up to Len
+        // bytes.
+        Size = ArgIdx == 0 ? LocationSize::precise(Len->getZExtValue())
+                           : LocationSize::upperBound(Len->getZExtValue());
+      }
+      return MemoryLocation(Arg, Size, AATags);
+    }
     case LibFunc_memset_pattern16:
       assert((ArgIdx == 0 || ArgIdx == 1) &&
              "Invalid argument index for memset_pattern16");
