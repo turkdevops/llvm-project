@@ -36,6 +36,8 @@ list(INSERT CMAKE_MODULE_PATH 0
   "${CMAKE_CURRENT_SOURCE_DIR}/../llvm/cmake/modules"
 )
 
+set(LLVM_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third-party")
+
 function(get_compiler_rt_path path)
   foreach(entry ${runtimes})
     get_filename_component(projName ${entry} NAME)
@@ -81,10 +83,6 @@ set(LLVM_CMAKE_DIR ${LLVM_MAIN_SRC_DIR}/cmake/modules)
 # This variable is used by individual runtimes to locate LLVM files.
 set(LLVM_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../llvm)
 
-if(APPLE)
-  set(LLVM_ENABLE_LIBCXX ON CACHE BOOL "")
-endif()
-
 include(CheckLibraryExists)
 include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
@@ -111,10 +109,11 @@ include(HandleLLVMOptions)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-if (NOT LLVM_DEFAULT_TARGET_TRIPLE)
-  include(GetHostTriple)
-  get_host_triple(LLVM_DEFAULT_TARGET_TRIPLE)
-endif()
+# Host triple is used by tests to check if they are running natively.
+include(GetHostTriple)
+get_host_triple(LLVM_HOST_TRIPLE)
+set(LLVM_DEFAULT_TARGET_TRIPLE "${LLVM_HOST_TRIPLE}" CACHE STRING
+  "Default target for which the runtimes will be built.")
 
 option(LLVM_INCLUDE_TESTS "Generate build targets for the runtimes unit tests." ON)
 option(LLVM_INCLUDE_DOCS "Generate build targets for the runtimes documentation." ON)

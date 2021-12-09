@@ -110,20 +110,7 @@ SIMachineFunctionInfo::SIMachineFunctionInfo(const MachineFunction &MF)
   else if (ST.isMesaGfxShader(F))
     ImplicitBufferPtr = true;
 
-  if (UseFixedABI) {
-    DispatchPtr = true;
-    QueuePtr = true;
-    ImplicitArgPtr = true;
-    WorkGroupIDX = true;
-    WorkGroupIDY = true;
-    WorkGroupIDZ = true;
-    WorkItemIDX = true;
-    WorkItemIDY = true;
-    WorkItemIDZ = true;
-
-    // FIXME: We don't need this?
-    DispatchID = true;
-  } else if (!AMDGPU::isGraphics(CC)) {
+  if (!AMDGPU::isGraphics(CC)) {
     if (IsKernel || !F.hasFnAttribute("amdgpu-no-workgroup-id-x"))
       WorkGroupIDX = true;
 
@@ -669,6 +656,9 @@ bool SIMachineFunctionInfo::usesAGPRs(const MachineFunction &MF) const {
     const TargetRegisterClass *RC = MRI.getRegClassOrNull(Reg);
     if (RC && SIRegisterInfo::isAGPRClass(RC)) {
       UsesAGPRs = true;
+      return true;
+    } else if (!RC && !MRI.use_empty(Reg) && MRI.getType(Reg).isValid()) {
+      // Defer caching UsesAGPRs, function might not yet been regbank selected.
       return true;
     }
   }

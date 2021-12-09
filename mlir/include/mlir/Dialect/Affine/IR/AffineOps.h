@@ -188,14 +188,14 @@ public:
   /// Returns the AffineMapAttr associated with 'memref'.
   NamedAttribute getAffineMapAttrForMemRef(Value memref) {
     if (memref == getSrcMemRef())
-      return {Identifier::get(getSrcMapAttrName(), getContext()),
+      return {StringAttr::get(getContext(), getSrcMapAttrName()),
               getSrcMapAttr()};
     if (memref == getDstMemRef())
-      return {Identifier::get(getDstMapAttrName(), getContext()),
+      return {StringAttr::get(getContext(), getDstMapAttrName()),
               getDstMapAttr()};
     assert(memref == getTagMemRef() &&
            "DmaStartOp expected source, destination or tag memref");
-    return {Identifier::get(getTagMapAttrName(), getContext()),
+    return {StringAttr::get(getContext(), getTagMapAttrName()),
             getTagMapAttr()};
   }
 
@@ -303,7 +303,7 @@ public:
   /// associated with 'memref'.
   NamedAttribute getAffineMapAttrForMemRef(Value memref) {
     assert(memref == getTagMemRef());
-    return {Identifier::get(getTagMapAttrName(), getContext()),
+    return {StringAttr::get(getContext(), getTagMapAttrName()),
             getTagMapAttr()};
   }
 
@@ -455,6 +455,6 @@ private:
   friend class AffineForOp;
 };
 
-} // end namespace mlir
+} // namespace mlir
 
 #endif

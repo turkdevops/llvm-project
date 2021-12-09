@@ -141,7 +141,7 @@ bool signMatchesDirection(int64_t elem, Direction direction) {
 Direction flippedDirection(Direction direction) {
   return direction == Direction::Up ? Direction::Down : Simplex::Direction::Up;
 }
-} // anonymous namespace
+} // namespace
 
 /// Find a pivot to change the sample value of the row in the specified
 /// direction. The returned pivot row will involve `row` if and only if the
@@ -240,7 +240,7 @@ void Simplex::pivot(unsigned pivotRow, unsigned pivotCol) {
   }
   normalizeRow(pivotRow);
 
-  for (unsigned row = nRedundant; row < nRow; ++row) {
+  for (unsigned row = 0; row < nRow; ++row) {
     if (row == pivotRow)
       continue;
     if (tableau(row, pivotCol) == 0) // Nothing to do.
@@ -259,8 +259,8 @@ void Simplex::pivot(unsigned pivotRow, unsigned pivotCol) {
 }
 
 /// Perform pivots until the unknown has a non-negative sample value or until
-/// no more upward pivots can be performed. Return the sign of the final sample
-/// value.
+/// no more upward pivots can be performed. Return success if we were able to
+/// bring the row to a non-negative sample value, and failure otherwise.
 LogicalResult Simplex::restoreRow(Unknown &u) {
   assert(u.orientation == Orientation::Row &&
          "unknown should be in row position");
@@ -357,6 +357,11 @@ void Simplex::swapColumns(unsigned i, unsigned j) {
 
 /// Mark this tableau empty and push an entry to the undo stack.
 void Simplex::markEmpty() {
+  // If the set is already empty, then we shouldn't add another UnmarkEmpty log
+  // entry, since in that case the Simplex will be erroneously marked as
+  // non-empty when rolling back past this point.
+  if (empty)
+    return;
   undoLog.push_back(UndoLogEntry::UnmarkEmpty);
   empty = true;
 }
@@ -581,6 +586,7 @@ bool Simplex::isMarkedRedundant(unsigned constraintIndex) const {
 void Simplex::markRowRedundant(Unknown &u) {
   assert(u.orientation == Orientation::Row &&
          "Unknown should be in row position!");
+  assert(u.pos >= nRedundant && "Unknown is already marked redundant!");
   swapRows(u.pos, nRedundant);
   ++nRedundant;
   undoLog.emplace_back(UndoLogEntry::UnmarkLastRedundant);
@@ -1239,5 +1245,39 @@ void Simplex::print(raw_ostream &os) const {
 }
 
 void Simplex::dump() const { print(llvm::errs()); }
+
+bool Simplex::isRationalSubsetOf(const FlatAffineConstraints &fac) {
+  if (isEmpty())
+    return true;
+
+  for (unsigned i = 0, e = fac.getNumInequalities(); i < e; ++i)
+    if (!isRedundantInequality(fac.getInequality(i)))
+      return false;
+
+  for (unsigned i = 0, e = fac.getNumEqualities(); i < e; ++i)
+    if (!isRedundantEquality(fac.getEquality(i)))
+      return false;
+
+  return true;
+}
+
+/// Computes the minimum value `coeffs` can take. If the value is greater than
+/// or equal to zero, the polytope entirely lies in the half-space defined by
+/// `coeffs >= 0`.
+bool Simplex::isRedundantInequality(ArrayRef<int64_t> coeffs) {
+  Optional<Fraction> minimum = computeOptimum(Direction::Down, coeffs);
+  return minimum && *minimum >= Fraction(0, 1);
+}
+
+/// Check whether the equality given by `coeffs == 0` is redundant given
+/// the existing constraints. This is redundant when `coeffs` is already
+/// always zero under the existing constraints. `coeffs` is always zero
+/// when the minimum and maximum value that `coeffs` can take are both zero.
+bool Simplex::isRedundantEquality(ArrayRef<int64_t> coeffs) {
+  Optional<Fraction> minimum = computeOptimum(Direction::Down, coeffs);
+  Optional<Fraction> maximum = computeOptimum(Direction::Up, coeffs);
+  return minimum && maximum && *maximum == Fraction(0, 1) &&
+         *minimum == Fraction(0, 1);
+}
 
 } // namespace mlir

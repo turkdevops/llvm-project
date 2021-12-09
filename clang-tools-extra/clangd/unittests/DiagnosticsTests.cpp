@@ -449,6 +449,21 @@ TEST(DiagnosticTest, RespectsDiagnosticConfig) {
                                "use of undeclared identifier 'unknown'")));
 }
 
+TEST(DiagnosticTest, RespectsDiagnosticConfigInHeader) {
+  Annotations Header(R"cpp(
+    int x = "42";  // error-ok
+  )cpp");
+  Annotations Main(R"cpp(
+    #include "header.hpp"
+  )cpp");
+  auto TU = TestTU::withCode(Main.code());
+  TU.AdditionalFiles["header.hpp"] = std::string(Header.code());
+  Config Cfg;
+  Cfg.Diagnostics.Suppress.insert("init_conversion_failed");
+  WithContextValue WithCfg(Config::Key, std::move(Cfg));
+  EXPECT_THAT(*TU.build().getDiagnostics(), IsEmpty());
+}
+
 TEST(DiagnosticTest, ClangTidySuppressionComment) {
   Annotations Main(R"cpp(
     int main() {
@@ -461,6 +476,13 @@ TEST(DiagnosticTest, ClangTidySuppressionComment) {
       double g = [[8]] / i;
       #define BAD2 BAD
       double h = BAD2;  // NOLINT
+      // NOLINTBEGIN
+      double x = BAD2;
+      double y = BAD2;
+      // NOLINTEND
+
+      // verify no crashes on unmatched nolints.
+      // NOLINTBEIGN
     }
   )cpp");
   TestTU TU = TestTU::withCode(Main.code());
@@ -845,58 +867,58 @@ class T {
                       "incomplete type 'ns::X' named in nested name specifier"),
                  DiagName("incomplete_nested_name_spec"),
                  WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                             "Add include \"x.h\" for symbol ns::X"))),
+                             "Include \"x.h\" for symbol ns::X"))),
            AllOf(Diag(Test.range("base"), "base class has incomplete type"),
                  DiagName("incomplete_base_class"),
                  WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                             "Add include \"x.h\" for symbol ns::X"))),
+                             "Include \"x.h\" for symbol ns::X"))),
            AllOf(Diag(Test.range("access"),
                       "member access into incomplete type 'ns::X'"),
                  DiagName("incomplete_member_access"),
                  WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                             "Add include \"x.h\" for symbol ns::X"))),
+                             "Include \"x.h\" for symbol ns::X"))),
            AllOf(
                Diag(
                    Test.range("type"),
                    "incomplete type 'ns::X' where a complete type is required"),
                DiagName("incomplete_type"),
                WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                           "Add include \"x.h\" for symbol ns::X"))),
+                           "Include \"x.h\" for symbol ns::X"))),
            AllOf(Diag(Test.range("incomplete"),
                       "variable has incomplete type 'ns::X'"),
                  DiagName("typecheck_decl_incomplete_type"),
                  WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                             "Add include \"x.h\" for symbol ns::X"))),
+                             "Include \"x.h\" for symbol ns::X"))),
            AllOf(
                Diag(Test.range("tag"), "incomplete definition of type 'ns::X'"),
                DiagName("typecheck_incomplete_tag"),
                WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                           "Add include \"x.h\" for symbol ns::X"))),
+                           "Include \"x.h\" for symbol ns::X"))),
            AllOf(Diag(Test.range("use"),
                       "invalid use of incomplete type 'ns::X'"),
                  DiagName("invalid_incomplete_type_use"),
                  WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                             "Add include \"x.h\" for symbol ns::X"))),
+                             "Include \"x.h\" for symbol ns::X"))),
            AllOf(Diag(Test.range("sizeof"),
                       "invalid application of 'sizeof' to "
                       "an incomplete type 'ns::X'"),
                  DiagName("sizeof_alignof_incomplete_or_sizeless_type"),
                  WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                             "Add include \"x.h\" for symbol ns::X"))),
+                             "Include \"x.h\" for symbol ns::X"))),
            AllOf(Diag(Test.range("for"),
                       "cannot use incomplete type 'ns::X' as a range"),
                  DiagName("for_range_incomplete_type"),
                  WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                             "Add include \"x.h\" for symbol ns::X"))),
+                             "Include \"x.h\" for symbol ns::X"))),
            AllOf(Diag(Test.range("return"),
                       "incomplete result type 'ns::X' in function definition"),
                  DiagName("func_def_incomplete_result"),
                  WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                             "Add include \"x.h\" for symbol ns::X"))),
+                             "Include \"x.h\" for symbol ns::X"))),
            AllOf(Diag(Test.range("field"), "field has incomplete type 'ns::X'"),
                  DiagName("field_incomplete_or_sizeless"),
                  WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                             "Add include \"x.h\" for symbol ns::X")))}))
+                             "Include \"x.h\" for symbol ns::X")))}))
       << Test.code();
 }
 
@@ -962,28 +984,28 @@ using Type = ns::$template[[Foo]]<int>;
           AllOf(Diag(Test.range("unqualified1"), "unknown type name 'X'"),
                 DiagName("unknown_typename"),
                 WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                            "Add include \"x.h\" for symbol ns::X"))),
+                            "Include \"x.h\" for symbol ns::X"))),
           Diag(Test.range("unqualified2"), "use of undeclared identifier 'X'"),
           AllOf(Diag(Test.range("qualified1"),
                      "no type named 'X' in namespace 'ns'"),
                 DiagName("typename_nested_not_found"),
                 WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                            "Add include \"x.h\" for symbol ns::X"))),
+                            "Include \"x.h\" for symbol ns::X"))),
           AllOf(Diag(Test.range("qualified2"),
                      "no member named 'X' in namespace 'ns'"),
                 DiagName("no_member"),
                 WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                            "Add include \"x.h\" for symbol ns::X"))),
+                            "Include \"x.h\" for symbol ns::X"))),
           AllOf(Diag(Test.range("global"),
                      "no type named 'Global' in the global namespace"),
                 DiagName("typename_nested_not_found"),
                 WithFix(Fix(Test.range("insert"), "#include \"global.h\"\n",
-                            "Add include \"global.h\" for symbol Global"))),
+                            "Include \"global.h\" for symbol Global"))),
           AllOf(Diag(Test.range("template"),
                      "no template named 'Foo' in namespace 'ns'"),
                 DiagName("no_member_template"),
                 WithFix(Fix(Test.range("insert"), "#include \"foo.h\"\n",
-                            "Add include \"foo.h\" for symbol ns::Foo")))));
+                            "Include \"foo.h\" for symbol ns::Foo")))));
 }
 
 TEST(IncludeFixerTest, MultipleMatchedSymbols) {
@@ -1007,12 +1029,12 @@ void foo() {
                   Diag(Test.range("unqualified"), "unknown type name 'X'"),
                   DiagName("unknown_typename"),
                   WithFix(Fix(Test.range("insert"), "#include \"a.h\"\n",
-                              "Add include \"a.h\" for symbol na::X"),
+                              "Include \"a.h\" for symbol na::X"),
                           Fix(Test.range("insert"), "#include \"b.h\"\n",
-                              "Add include \"b.h\" for symbol na::nb::X")))));
+                              "Include \"b.h\" for symbol na::nb::X")))));
 }
 
-TEST(IncludeFixerTest, NoCrashMemebrAccess) {
+TEST(IncludeFixerTest, NoCrashMemberAccess) {
   Annotations Test(R"cpp(// error-ok
     struct X { int  xyz; };
     void g() { X x; x.$[[xy]]; }
@@ -1063,8 +1085,7 @@ void bar(X *x) {
       ADD_FAILURE() << "D.Fixes.size() != 1";
       continue;
     }
-    EXPECT_EQ(D.Fixes[0].Message,
-              std::string("Add include \"a.h\" for symbol X"));
+    EXPECT_EQ(D.Fixes[0].Message, std::string("Include \"a.h\" for symbol X"));
   }
 }
 
@@ -1084,11 +1105,11 @@ void g() {  ns::$[[scope]]::X_Y();  }
 
   EXPECT_THAT(
       *TU.build().getDiagnostics(),
-      UnorderedElementsAre(AllOf(
-          Diag(Test.range(), "no member named 'scope' in namespace 'ns'"),
-          DiagName("no_member"),
-          WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                      "Add include \"x.h\" for symbol ns::scope::X_Y")))));
+      UnorderedElementsAre(
+          AllOf(Diag(Test.range(), "no member named 'scope' in namespace 'ns'"),
+                DiagName("no_member"),
+                WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
+                            "Include \"x.h\" for symbol ns::scope::X_Y")))));
 }
 
 TEST(IncludeFixerTest, UnresolvedSpecifierWithSemaCorrection) {
@@ -1113,32 +1134,29 @@ void f() {
   EXPECT_THAT(
       *TU.build().getDiagnostics(),
       UnorderedElementsAre(
-          AllOf(
-              Diag(Test.range("q1"), "use of undeclared identifier 'clangd'; "
-                                     "did you mean 'clang'?"),
-              DiagName("undeclared_var_use_suggest"),
-              WithFix(_, // change clangd to clang
-                      Fix(Test.range("insert"), "#include \"x.h\"\n",
-                          "Add include \"x.h\" for symbol clang::clangd::X"))),
-          AllOf(
-              Diag(Test.range("x"), "no type named 'X' in namespace 'clang'"),
-              DiagName("typename_nested_not_found"),
-              WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                          "Add include \"x.h\" for symbol clang::clangd::X"))),
+          AllOf(Diag(Test.range("q1"), "use of undeclared identifier 'clangd'; "
+                                       "did you mean 'clang'?"),
+                DiagName("undeclared_var_use_suggest"),
+                WithFix(_, // change clangd to clang
+                        Fix(Test.range("insert"), "#include \"x.h\"\n",
+                            "Include \"x.h\" for symbol clang::clangd::X"))),
+          AllOf(Diag(Test.range("x"), "no type named 'X' in namespace 'clang'"),
+                DiagName("typename_nested_not_found"),
+                WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
+                            "Include \"x.h\" for symbol clang::clangd::X"))),
           AllOf(
               Diag(Test.range("q2"), "use of undeclared identifier 'clangd'; "
                                      "did you mean 'clang'?"),
               DiagName("undeclared_var_use_suggest"),
-              WithFix(
-                  _, // change clangd to clang
-                  Fix(Test.range("insert"), "#include \"y.h\"\n",
-                      "Add include \"y.h\" for symbol clang::clangd::ns::Y"))),
+              WithFix(_, // change clangd to clang
+                      Fix(Test.range("insert"), "#include \"y.h\"\n",
+                          "Include \"y.h\" for symbol clang::clangd::ns::Y"))),
           AllOf(Diag(Test.range("ns"),
                      "no member named 'ns' in namespace 'clang'"),
                 DiagName("no_member"),
-                WithFix(Fix(
-                    Test.range("insert"), "#include \"y.h\"\n",
-                    "Add include \"y.h\" for symbol clang::clangd::ns::Y")))));
+                WithFix(
+                    Fix(Test.range("insert"), "#include \"y.h\"\n",
+                        "Include \"y.h\" for symbol clang::clangd::ns::Y")))));
 }
 
 TEST(IncludeFixerTest, SpecifiedScopeIsNamespaceAlias) {
@@ -1159,7 +1177,7 @@ namespace c {
                   Diag(Test.range(), "no type named 'X' in namespace 'a'"),
                   DiagName("typename_nested_not_found"),
                   WithFix(Fix(Test.range("insert"), "#include \"x.h\"\n",
-                              "Add include \"x.h\" for symbol a::X")))));
+                              "Include \"x.h\" for symbol a::X")))));
 }
 
 TEST(IncludeFixerTest, NoCrashOnTemplateInstantiations) {
@@ -1182,6 +1200,26 @@ TEST(IncludeFixerTest, NoCrashOnTemplateInstantiations) {
   EXPECT_THAT(
       *TU.build().getDiagnostics(),
       ElementsAre(Diag(Test.range(), "use of undeclared identifier 'a'")));
+}
+
+TEST(IncludeFixerTest, HeaderNamedInDiag) {
+  Annotations Test(R"cpp(
+    $insert[[]]int main() {
+      [[printf]]("");
+    }
+  )cpp");
+  auto TU = TestTU::withCode(Test.code());
+  TU.ExtraArgs = {"-xc"};
+  auto Index = buildIndexWithSymbol({});
+  TU.ExternalIndex = Index.get();
+
+  EXPECT_THAT(
+      *TU.build().getDiagnostics(),
+      ElementsAre(AllOf(
+          Diag(Test.range(), "implicitly declaring library function 'printf' "
+                             "with type 'int (const char *, ...)'"),
+          WithFix(Fix(Test.range("insert"), "#include <stdio.h>\n",
+                      "Include <stdio.h> for symbol printf")))));
 }
 
 TEST(DiagsInHeaders, DiagInsideHeader) {
@@ -1464,6 +1502,51 @@ TEST(Diagnostics, Tags) {
                   AllOf(Diag(Test.range("deprecated"), "'bar' is deprecated"),
                         WithTag(DiagnosticTag::Deprecated))));
 }
+
+TEST(DiagnosticsTest, IncludeCleaner) {
+  Annotations Test(R"cpp(
+$fix[[  $diag[[#include "unused.h"]]
+]]
+  #include "used.h"
+
+  #include <system_header.h>
+
+  void foo() {
+    used();
+  }
+  )cpp");
+  TestTU TU;
+  TU.Code = Test.code().str();
+  TU.AdditionalFiles["unused.h"] = R"cpp(
+    #pragma once
+    void unused() {}
+  )cpp";
+  TU.AdditionalFiles["used.h"] = R"cpp(
+    #pragma once
+    void used() {}
+  )cpp";
+  TU.AdditionalFiles["system/system_header.h"] = "";
+  TU.ExtraArgs = {"-isystem" + testPath("system")};
+  // Off by default.
+  EXPECT_THAT(*TU.build().getDiagnostics(), IsEmpty());
+  Config Cfg;
+  Cfg.Diagnostics.UnusedIncludes = Config::UnusedIncludesPolicy::Strict;
+  WithContextValue WithCfg(Config::Key, std::move(Cfg));
+  EXPECT_THAT(
+      *TU.build().getDiagnostics(),
+      UnorderedElementsAre(AllOf(
+          Diag(Test.range("diag"), "included header unused.h is not used"),
+          WithTag(DiagnosticTag::Unnecessary), DiagSource(Diag::Clangd),
+          WithFix(Fix(Test.range("fix"), "", "remove #include directive")))));
+  Cfg.Diagnostics.SuppressAll = true;
+  WithContextValue SuppressAllWithCfg(Config::Key, std::move(Cfg));
+  EXPECT_THAT(*TU.build().getDiagnostics(), IsEmpty());
+  Cfg.Diagnostics.SuppressAll = false;
+  Cfg.Diagnostics.Suppress = {"unused-includes"};
+  WithContextValue SuppressFilterWithCfg(Config::Key, std::move(Cfg));
+  EXPECT_THAT(*TU.build().getDiagnostics(), IsEmpty());
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang

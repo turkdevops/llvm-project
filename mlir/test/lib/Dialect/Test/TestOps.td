@@ -9,6 +9,7 @@
 #ifndef TEST_OPS
 #define TEST_OPS
 
+include "TestDialect.td"
 include "mlir/Dialect/DLTI/DLTIBase.td"
 include "mlir/IR/OpBase.td"
 include "mlir/IR/OpAsmInterface.td"
@@ -23,41 +24,12 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Dialect/Linalg/IR/LinalgInterfaces.td"
 include "TestInterfaces.td"
 
-def Test_Dialect : Dialect {
-  let name = "test";
-  let cppNamespace = "::test";
-  let emitAccessorPrefix = kEmitAccessorPrefix_Prefixed;
-  let hasCanonicalizer = 1;
-  let hasConstantMaterializer = 1;
-  let hasOperationAttrVerify = 1;
-  let hasRegionArgAttrVerify = 1;
-  let hasRegionResultAttrVerify = 1;
-  let hasOperationInterfaceFallback = 1;
-  let hasNonDefaultDestructor = 1;
-  let dependentDialects = ["::mlir::DLTIDialect"];
 
-  let extraClassDeclaration = [{
-    void registerAttributes();
-    void registerTypes();
+// Include the attribute definitions.
+include "TestAttrDefs.td"
+// Include the type definitions.
+include "TestTypeDefs.td"
 
-    ::mlir::Attribute parseAttribute(::mlir::DialectAsmParser &parser,
-                                     ::mlir::Type type) const override;
-    void printAttribute(::mlir::Attribute attr,
-                        ::mlir::DialectAsmPrinter &printer) const override;
-
-    // Provides a custom printing/parsing for some operations.
-    ::llvm::Optional<ParseOpHook>
-      getParseOperationHook(::llvm::StringRef opName) const override;
-    ::llvm::unique_function<void(::mlir::Operation *,
-                                 ::mlir::OpAsmPrinter &printer)>
-     getOperationPrinter(::mlir::Operation *op) const override;
-
-  private:
-    // Storage for a custom fallback interface.
-    void *fallbackEffectOpInterfaces;
-
-  }];
-}
 
 class TEST_Op<string mnemonic, list<OpTrait> traits = []> :
     Op<Test_Dialect, mnemonic, traits>;
@@ -1001,6 +973,13 @@ def TestIdempotentTraitOp
   let results = (outs I32);
 }
 
+def TestIdempotentTraitBinaryOp
+    : TEST_Op<"op_idempotent_trait_binary",
+              [SameOperandsAndResultType, NoSideEffect, Idempotent]> {
+  let arguments = (ins I32:$op1, I32:$op2);
+  let results = (outs I32);
+}
+
 def TestInvolutionTraitNoOperationFolderOp
  : TEST_Op<"op_involution_trait_no_operation_fold",
            [SameOperandsAndResultType, NoSideEffect, Involution]> {
@@ -1329,6 +1308,30 @@ def : Pat<(OneI32ResultOp),
               ConstantAttr<I32Attr, "2">)>;
 
 //===----------------------------------------------------------------------===//
+// Test Patterns (either)
+
+def TestEitherOpA : TEST_Op<"either_op_a"> {
+  let arguments = (ins AnyInteger:$arg0, AnyInteger:$arg1, AnyInteger:$arg2);
+  let results = (outs I32:$output);
+}
+
+def TestEitherOpB : TEST_Op<"either_op_b"> {
+  let arguments = (ins AnyInteger:$arg0);
+  let results = (outs I32:$output);
+}
+
+def : Pat<(TestEitherOpA (either I32:$arg1, I16:$arg2), $_),
+          (TestEitherOpB $arg2)>;
+
+def : Pat<(TestEitherOpA (either (TestEitherOpB I32:$arg1), I16:$arg2), $_),
+          (TestEitherOpB $arg2)>;
+
+def : Pat<(TestEitherOpA (either (TestEitherOpB I32:$arg1),
+                                 (TestEitherOpB I16:$arg2)),
+                          $_),
+          (TestEitherOpB $arg2)>;
+
+//===----------------------------------------------------------------------===//
 // Test Patterns (Location)
 
 // Test that we can specify locations for generated ops.
@@ -1497,14 +1500,31 @@ def TestValidOp : TEST_Op<"valid", [Terminator]>,
 def TestMergeBlocksOp : TEST_Op<"merge_blocks"> {
   let summary = "merge_blocks operation";
   let description = [{
-    Test op with multiple blocks that are merged with Dialect Conversion"
+    Test op with multiple blocks that are merged with Dialect Conversion
   }];
 
   let regions = (region AnyRegion:$body);
   let results = (outs Variadic<AnyType>:$result);
 }
 
+def TestRemappedValueRegionOp : TEST_Op<"remapped_value_region",
+                                        [SingleBlock]> {
+  let summary = "remapped_value_region operation";
+  let description = [{
+    Test op that remaps values that haven't yet been converted in Dialect
+    Conversion.
+  }];
+
+  let regions = (region SizedRegion<1>:$body);
+  let results = (outs Variadic<AnyType>:$result);
+}
+
 def TestSignatureConversionUndoOp : TEST_Op<"signature_conversion_undo"> {
+  let regions = (region AnyRegion);
+}
+
+def TestSignatureConversionNoConverterOp
+  : TEST_Op<"signature_conversion_no_converter"> {
   let regions = (region AnyRegion);
 }
 
@@ -1584,6 +1604,25 @@ def WrappingRegionOp : TEST_Op<"wrapping_region",
   }];
 
   let results = (outs Variadic<AnyType>);
+  let regions = (region SizedRegion<1>:$region);
+  let parser = [{ return ::parse$cppClass(parser, result); }];
+  let printer = [{ return ::print(p, *this); }];
+}
+
+def PrettyPrintedRegionOp : TEST_Op<"pretty_printed_region",
+    [SingleBlockImplicitTerminator<"TestReturnOp">]> {
+  let summary =  "pretty_printed_region operation";
+  let description = [{
+    Test-op can be printed either in a "pretty" or "non-pretty" way based on
+    some criteria. The custom parser parsers both the versions while testing
+    APIs: parseCustomOperationName & parseGenericOperationAfterOpName.
+  }];
+  let arguments = (ins
+    AnyType:$input1,
+    AnyType:$input2
+  );
+
+  let results = (outs AnyType);
   let regions = (region SizedRegion<1>:$region);
   let parser = [{ return ::parse$cppClass(parser, result); }];
   let printer = [{ return ::print(p, *this); }];
@@ -1856,6 +1895,26 @@ def FormatOptionalWithElse : TEST_Op<"format_optional_else"> {
   let assemblyFormat = "(`then` $isFirstBranchPresent^):(`else`)? attr-dict";
 }
 
+def FormatCompoundAttr : TEST_Op<"format_compound_attr"> {
+  let arguments = (ins CompoundAttrA:$compound);
+  let assemblyFormat = "$compound attr-dict-with-keyword";
+}
+
+def FormatNestedAttr : TEST_Op<"format_nested_attr"> {
+  let arguments = (ins CompoundAttrNested:$nested);
+  let assemblyFormat = "$nested attr-dict-with-keyword";
+}
+
+def FormatNestedCompoundAttr : TEST_Op<"format_cpmd_nested_attr"> {
+  let arguments = (ins CompoundNestedOuter:$nested);
+  let assemblyFormat = "`nested` $nested attr-dict-with-keyword";
+}
+
+def FormatNestedType : TEST_Op<"format_cpmd_nested_type"> {
+  let arguments = (ins CompoundNestedOuterType:$nested);
+  let assemblyFormat = "$nested `nested` type($nested) attr-dict-with-keyword";
+}
+
 //===----------------------------------------------------------------------===//
 // Custom Directives
 
@@ -1886,10 +1945,10 @@ def FormatCustomDirectiveOperandsAndTypes
 }
 
 def FormatCustomDirectiveRegions : TEST_Op<"format_custom_directive_regions"> {
-  let regions = (region AnyRegion:$region, VariadicRegion<AnyRegion>:$regions);
+  let regions = (region AnyRegion:$region, VariadicRegion<AnyRegion>:$other_regions);
   let assemblyFormat = [{
     custom<CustomDirectiveRegions>(
-      $region, $regions
+      $region, $other_regions
     )
     attr-dict
   }];

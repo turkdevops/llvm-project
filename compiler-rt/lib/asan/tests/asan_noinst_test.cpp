@@ -11,19 +11,20 @@
 // This test file should be compiled w/o asan instrumentation.
 //===----------------------------------------------------------------------===//
 
+#include <assert.h>
+#include <sanitizer/allocator_interface.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>  // for memset()
+
+#include <algorithm>
+#include <limits>
+#include <vector>
+
 #include "asan_allocator.h"
 #include "asan_internal.h"
 #include "asan_mapping.h"
 #include "asan_test_utils.h"
-#include <sanitizer/allocator_interface.h>
-
-#include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>  // for memset()
-#include <algorithm>
-#include <vector>
-#include <limits>
 
 using namespace __sanitizer;
 
@@ -232,14 +233,20 @@ TEST(AddressSanitizer, ShadowRegionIsPoisonedTest) {
 // Test __asan_load1 & friends.
 TEST(AddressSanitizer, LoadStoreCallbacks) {
   typedef void (*CB)(uptr p);
-  CB cb[2][5] = {
-      {
-        __asan_load1, __asan_load2, __asan_load4, __asan_load8, __asan_load16,
-      }, {
-        __asan_store1, __asan_store2, __asan_store4, __asan_store8,
-        __asan_store16,
-      }
-  };
+  CB cb[2][5] = {{
+                     __asan_load1,
+                     __asan_load2,
+                     __asan_load4,
+                     __asan_load8,
+                     __asan_load16,
+                 },
+                 {
+                     __asan_store1,
+                     __asan_store2,
+                     __asan_store4,
+                     __asan_store8,
+                     __asan_store16,
+                 }};
 
   uptr buggy_ptr;
 

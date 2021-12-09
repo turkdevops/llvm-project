@@ -6,9 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Transforms/Bufferize.h"
 #include "PassDetail.h"
+
 #include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
 #include "mlir/Dialect/Linalg/IR/LinalgOps.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
@@ -312,7 +314,7 @@ struct LinalgBufferizePass : public LinalgBufferizeBase<LinalgBufferizePass> {
   void runOnOperation() override {
     MLIRContext &context = getContext();
     ConversionTarget target(context);
-    BufferizeTypeConverter typeConverter;
+    bufferization::BufferizeTypeConverter typeConverter;
 
     // Mark all Standard operations legal.
     target.addLegalDialect<arith::ArithmeticDialect, AffineDialect,
@@ -337,14 +339,15 @@ struct LinalgBufferizePass : public LinalgBufferizeBase<LinalgBufferizePass> {
       signalPassFailure();
   }
 };
-} // end anonymous namespace
+} // namespace
 
 std::unique_ptr<OperationPass<FuncOp>> mlir::createLinalgBufferizePass() {
   return std::make_unique<LinalgBufferizePass>();
 }
 
 void mlir::linalg::populateLinalgBufferizePatterns(
-    BufferizeTypeConverter &typeConverter, RewritePatternSet &patterns) {
+    bufferization::BufferizeTypeConverter &typeConverter,
+    RewritePatternSet &patterns) {
   // TODO: Drop this once tensor constants work in standard.
   // clang-format off
   patterns.add<

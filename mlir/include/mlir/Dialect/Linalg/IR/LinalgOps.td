@@ -133,7 +133,7 @@ def Linalg_PadTensorOp : Linalg_Op<"pad_tensor",
     [AttrSizedOperandSegments, NoSideEffect,
      DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
      DeclareOpInterfaceMethods<TilingInterface,
-         ["getDestinationOperands", "getLoopIteratorTypes", "getLoopBounds",
+         ["getDestinationOperands", "getLoopIteratorTypes", "getIterationDomain",
           "getTiledImplementation"]>]> {
   let summary = "tensor pad operation";
   let description = [{
@@ -658,6 +658,12 @@ def Linalg_TiledLoopOp : Linalg_Op<"tiled_loop", [
              "expected upper bounds for every loop dimension");
       for (unsigned i = 0, pos = 2 * numLoops; i < numLoops; ++i, ++pos)
         setOperand(pos, steps[i]);
+    }
+
+    /// Operand that corresponds to the `bbArg` block argument.
+    OpOperand& getTiedOperand(BlockArgument& bbArg) {
+      return getOperation()->getOpOperand(getNumControlOperands() +
+                                          bbArg.getArgNumber() - getNumLoops());
     }
 
     /// Block argument that corresponds to the `input` or `output` operand.

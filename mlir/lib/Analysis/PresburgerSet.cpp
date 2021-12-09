@@ -196,7 +196,7 @@ static void subtractRecursively(FlatAffineConstraints &b, Simplex &simplex,
   // the local variables of sI.
   std::vector<llvm::Optional<std::pair<unsigned, unsigned>>> repr(
       sI.getNumLocalIds());
-  sI.getLocalReprLbUbPairs(repr);
+  sI.getLocalReprs(repr);
 
   // Add sI's locals to b, after b's locals. Also add b's locals to sI, before
   // sI's locals.
@@ -379,6 +379,42 @@ bool PresburgerSet::findIntegerSample(SmallVectorImpl<int64_t> &sample) {
     }
   }
   return false;
+}
+
+PresburgerSet PresburgerSet::coalesce() const {
+  PresburgerSet newSet = PresburgerSet::getEmptySet(getNumDims(), getNumSyms());
+  llvm::SmallBitVector isRedundant(getNumFACs());
+
+  for (unsigned i = 0, e = flatAffineConstraints.size(); i < e; ++i) {
+    if (isRedundant[i])
+      continue;
+    Simplex simplex(flatAffineConstraints[i]);
+
+    // Check whether the polytope of `simplex` is empty. If so, it is trivially
+    // redundant.
+    if (simplex.isEmpty()) {
+      isRedundant[i] = true;
+      continue;
+    }
+
+    // Check whether `FlatAffineConstraints[i]` is contained in any FAC, that is
+    // different from itself and not yet marked as redundant.
+    for (unsigned j = 0, e = flatAffineConstraints.size(); j < e; ++j) {
+      if (j == i || isRedundant[j])
+        continue;
+
+      if (simplex.isRationalSubsetOf(flatAffineConstraints[j])) {
+        isRedundant[i] = true;
+        break;
+      }
+    }
+  }
+
+  for (unsigned i = 0, e = flatAffineConstraints.size(); i < e; ++i)
+    if (!isRedundant[i])
+      newSet.unionFACInPlace(flatAffineConstraints[i]);
+
+  return newSet;
 }
 
 void PresburgerSet::print(raw_ostream &os) const {

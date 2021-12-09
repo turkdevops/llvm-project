@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/__support/FPUtil/FPBits.h"
-#include "src/__support/FPUtil/TestHelpers.h"
 #include "src/math/expm1f.h"
 #include "utils/MPFRWrapper/MPFRUtils.h"
+#include "utils/UnitTest/FPMatcher.h"
 #include "utils/UnitTest/Test.h"
 #include <math.h>
 
@@ -29,7 +29,7 @@ TEST(LlvmLibcExpm1fTest, SpecialNumbers) {
   EXPECT_FP_EQ(inf, __llvm_libc::expm1f(inf));
   EXPECT_EQ(errno, 0);
 
-  EXPECT_FP_EQ(-1.0f, __llvm_libc::expm1f(negInf));
+  EXPECT_FP_EQ(-1.0f, __llvm_libc::expm1f(neg_inf));
   EXPECT_EQ(errno, 0);
 
   EXPECT_FP_EQ(0.0f, __llvm_libc::expm1f(0.0f));

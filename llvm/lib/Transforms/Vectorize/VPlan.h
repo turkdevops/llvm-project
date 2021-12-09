@@ -59,6 +59,7 @@ class Value;
 class VPBasicBlock;
 class VPRegionBlock;
 class VPlan;
+class VPReplicateRecipe;
 class VPlanSlp;
 
 /// Returns a calculation for the total number of elements for a given \p VF.
@@ -346,6 +347,10 @@ struct VPTransformState {
 
   /// Pointer to the VPlan code is generated for.
   VPlan *Plan;
+
+  /// Holds recipes that may generate a poison value that is used after
+  /// vectorization, even when their operands are not poison.
+  SmallPtrSet<VPRecipeBase *, 16> MayGeneratePoisonRecipes;
 };
 
 /// VPUsers instance used by VPBlockBase to manage CondBit and the block
@@ -789,6 +794,7 @@ public:
 private:
   typedef unsigned char OpcodeTy;
   OpcodeTy Opcode;
+  FastMathFlags FMF;
 
   /// Utility method serving execute(): generates a single instance of the
   /// modeled instruction.
@@ -801,13 +807,6 @@ public:
   VPInstruction(unsigned Opcode, ArrayRef<VPValue *> Operands)
       : VPRecipeBase(VPRecipeBase::VPInstructionSC, Operands),
         VPValue(VPValue::VPVInstructionSC, nullptr, this), Opcode(Opcode) {}
-
-  VPInstruction(unsigned Opcode, ArrayRef<VPInstruction *> Operands)
-      : VPRecipeBase(VPRecipeBase::VPInstructionSC, {}),
-        VPValue(VPValue::VPVInstructionSC, nullptr, this), Opcode(Opcode) {
-    for (auto *I : Operands)
-      addOperand(I->getVPSingleValue());
-  }
 
   VPInstruction(unsigned Opcode, std::initializer_list<VPValue *> Operands)
       : VPInstruction(Opcode, ArrayRef<VPValue *>(Operands)) {}
@@ -870,6 +869,9 @@ public:
       return true;
     }
   }
+
+  /// Set the fast-math flags.
+  void setFastMathFlags(FastMathFlags FMFNew);
 };
 
 /// VPWidenRecipe is a recipe for producing a copy of vector type its
@@ -1005,17 +1007,20 @@ class VPWidenIntOrFpInductionRecipe : public VPRecipeBase {
   PHINode *IV;
 
 public:
-  VPWidenIntOrFpInductionRecipe(PHINode *IV, VPValue *Start, Instruction *Cast,
-                                TruncInst *Trunc = nullptr)
+  VPWidenIntOrFpInductionRecipe(PHINode *IV, VPValue *Start,
+                                Instruction *Cast = nullptr)
       : VPRecipeBase(VPWidenIntOrFpInductionSC, {Start}), IV(IV) {
-    if (Trunc)
-      new VPValue(Trunc, this);
-    else
-      new VPValue(IV, this);
+    new VPValue(IV, this);
 
     if (Cast)
       new VPValue(Cast, this);
   }
+
+  VPWidenIntOrFpInductionRecipe(PHINode *IV, VPValue *Start, TruncInst *Trunc)
+      : VPRecipeBase(VPWidenIntOrFpInductionSC, {Start}), IV(IV) {
+    new VPValue(Trunc, this);
+  }
+
   ~VPWidenIntOrFpInductionRecipe() override = default;
 
   /// Method to support type inquiry through isa, cast, and dyn_cast.
@@ -1167,7 +1172,7 @@ struct VPFirstOrderRecurrencePHIRecipe : public VPWidenPHIRecipe {
 /// operand.
 class VPReductionPHIRecipe : public VPWidenPHIRecipe {
   /// Descriptor for the reduction.
-  RecurrenceDescriptor &RdxDesc;
+  const RecurrenceDescriptor &RdxDesc;
 
   /// The phi is part of an in-loop reduction.
   bool IsInLoop;
@@ -1178,7 +1183,7 @@ class VPReductionPHIRecipe : public VPWidenPHIRecipe {
 public:
   /// Create a new VPReductionPHIRecipe for the reduction \p Phi described by \p
   /// RdxDesc.
-  VPReductionPHIRecipe(PHINode *Phi, RecurrenceDescriptor &RdxDesc,
+  VPReductionPHIRecipe(PHINode *Phi, const RecurrenceDescriptor &RdxDesc,
                        VPValue &Start, bool IsInLoop = false,
                        bool IsOrdered = false)
       : VPWidenPHIRecipe(VPVReductionPHISC, VPReductionPHISC, Phi, &Start),
@@ -1208,7 +1213,9 @@ public:
              VPSlotTracker &SlotTracker) const override;
 #endif
 
-  RecurrenceDescriptor &getRecurrenceDescriptor() { return RdxDesc; }
+  const RecurrenceDescriptor &getRecurrenceDescriptor() const {
+    return RdxDesc;
+  }
 
   /// Returns true, if the phi is part of an ordered reduction.
   bool isOrdered() const { return IsOrdered; }
@@ -1338,13 +1345,13 @@ public:
 /// The Operands are {ChainOp, VecOp, [Condition]}.
 class VPReductionRecipe : public VPRecipeBase, public VPValue {
   /// The recurrence decriptor for the reduction in question.
-  RecurrenceDescriptor *RdxDesc;
+  const RecurrenceDescriptor *RdxDesc;
   /// Pointer to the TTI, needed to create the target reduction
   const TargetTransformInfo *TTI;
 
 public:
-  VPReductionRecipe(RecurrenceDescriptor *R, Instruction *I, VPValue *ChainOp,
-                    VPValue *VecOp, VPValue *CondOp,
+  VPReductionRecipe(const RecurrenceDescriptor *R, Instruction *I,
+                    VPValue *ChainOp, VPValue *VecOp, VPValue *CondOp,
                     const TargetTransformInfo *TTI)
       : VPRecipeBase(VPRecipeBase::VPReductionSC, {ChainOp, VecOp}),
         VPValue(VPValue::VPVReductionSC, I, this), RdxDesc(R), TTI(TTI) {
@@ -1511,7 +1518,7 @@ public:
 /// - For store: Address, stored value, optional mask
 /// TODO: We currently execute only per-part unless a specific instance is
 /// provided.
-class VPWidenMemoryInstructionRecipe : public VPRecipeBase {
+class VPWidenMemoryInstructionRecipe : public VPRecipeBase, public VPValue {
   Instruction &Ingredient;
 
   // Whether the loaded-from / stored-to addresses are consecutive.
@@ -1533,10 +1540,10 @@ class VPWidenMemoryInstructionRecipe : public VPRecipeBase {
 public:
   VPWidenMemoryInstructionRecipe(LoadInst &Load, VPValue *Addr, VPValue *Mask,
                                  bool Consecutive, bool Reverse)
-      : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr}), Ingredient(Load),
+      : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr}),
+        VPValue(VPValue::VPVMemoryInstructionSC, &Load, this), Ingredient(Load),
         Consecutive(Consecutive), Reverse(Reverse) {
     assert((Consecutive || !Reverse) && "Reverse implies consecutive");
-    new VPValue(VPValue::VPVMemoryInstructionSC, &Load, this);
     setMask(Mask);
   }
 
@@ -1544,6 +1551,7 @@ public:
                                  VPValue *StoredValue, VPValue *Mask,
                                  bool Consecutive, bool Reverse)
       : VPRecipeBase(VPWidenMemoryInstructionSC, {Addr, StoredValue}),
+        VPValue(VPValue::VPVMemoryInstructionSC, &Store, this),
         Ingredient(Store), Consecutive(Consecutive), Reverse(Reverse) {
     assert((Consecutive || !Reverse) && "Reverse implies consecutive");
     setMask(Mask);
@@ -1593,11 +1601,11 @@ public:
 };
 
 /// A Recipe for widening the canonical induction variable of the vector loop.
-class VPWidenCanonicalIVRecipe : public VPRecipeBase {
+class VPWidenCanonicalIVRecipe : public VPRecipeBase, public VPValue {
 public:
-  VPWidenCanonicalIVRecipe() : VPRecipeBase(VPWidenCanonicalIVSC, {}) {
-    new VPValue(nullptr, this);
-  }
+  VPWidenCanonicalIVRecipe()
+      : VPRecipeBase(VPWidenCanonicalIVSC, {}),
+        VPValue(VPValue::VPVWidenCanonicalIVSC, nullptr, this) {}
 
   ~VPWidenCanonicalIVRecipe() override = default;
 
@@ -2247,6 +2255,12 @@ public:
       return getOrAddVPValue(Op);
     };
     return map_range(Operands, Fn);
+  }
+
+  /// Returns true if \p VPV is uniform after vectorization.
+  bool isUniformAfterVectorization(VPValue *VPV) const {
+    auto RepR = dyn_cast_or_null<VPReplicateRecipe>(VPV->getDef());
+    return !VPV->getDef() || (RepR && RepR->isUniform());
   }
 
 private:
