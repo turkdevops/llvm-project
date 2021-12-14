@@ -24,8 +24,8 @@ class TypeSize;
 
 namespace mlir {
 
-class DialectAsmParser;
-class DialectAsmPrinter;
+class AsmParser;
+class AsmPrinter;
 
 namespace LLVM {
 class LLVMDialect;
@@ -226,8 +226,9 @@ public:
 ///
 /// Note that the packedness of the struct takes place in uniquing of literal
 /// structs, but does not in uniquing of identified structs.
-class LLVMStructType : public Type::TypeBase<LLVMStructType, Type,
-                                             detail::LLVMStructTypeStorage> {
+class LLVMStructType
+    : public Type::TypeBase<LLVMStructType, Type, detail::LLVMStructTypeStorage,
+                            DataLayoutTypeInterface::Trait> {
 public:
   /// Inherit base constructors.
   using Base::Base;
@@ -282,10 +283,10 @@ public:
   LogicalResult setBody(ArrayRef<Type> types, bool isPacked);
 
   /// Checks if a struct is packed.
-  bool isPacked();
+  bool isPacked() const;
 
   /// Checks if a struct is identified.
-  bool isIdentified();
+  bool isIdentified() const;
 
   /// Checks if a struct is opaque.
   bool isOpaque();
@@ -297,13 +298,30 @@ public:
   StringRef getName();
 
   /// Returns the list of element types contained in a non-opaque struct.
-  ArrayRef<Type> getBody();
+  ArrayRef<Type> getBody() const;
 
   /// Verifies that the type about to be constructed is well-formed.
   static LogicalResult verify(function_ref<InFlightDiagnostic()> emitError,
                               StringRef, bool);
   static LogicalResult verify(function_ref<InFlightDiagnostic()> emitError,
                               ArrayRef<Type> types, bool);
+
+  /// Hooks for DataLayoutTypeInterface. Should not be called directly. Obtain a
+  /// DataLayout instance and query it instead.
+  unsigned getTypeSizeInBits(const DataLayout &dataLayout,
+                             DataLayoutEntryListRef params) const;
+
+  unsigned getABIAlignment(const DataLayout &dataLayout,
+                           DataLayoutEntryListRef params) const;
+
+  unsigned getPreferredAlignment(const DataLayout &dataLayout,
+                                 DataLayoutEntryListRef params) const;
+
+  bool areCompatible(DataLayoutEntryListRef oldLayout,
+                     DataLayoutEntryListRef newLayout) const;
+
+  LogicalResult verifyEntries(DataLayoutEntryListRef entries,
+                              Location loc) const;
 };
 
 //===----------------------------------------------------------------------===//
@@ -419,7 +437,7 @@ namespace detail {
 Type parseType(DialectAsmParser &parser);
 
 /// Prints an LLVM Dialect type.
-void printType(Type type, DialectAsmPrinter &printer);
+void printType(Type type, AsmPrinter &printer);
 } // namespace detail
 
 //===----------------------------------------------------------------------===//
@@ -428,6 +446,10 @@ void printType(Type type, DialectAsmPrinter &printer);
 
 /// Returns `true` if the given type is compatible with the LLVM dialect.
 bool isCompatibleType(Type type);
+
+/// Returns `true` if the given outer type is compatible with the LLVM dialect
+/// without checking its potential nested types such as struct elements.
+bool isCompatibleOuterType(Type type);
 
 /// Returns `true` if the given type is a floating-point type compatible with
 /// the LLVM dialect.

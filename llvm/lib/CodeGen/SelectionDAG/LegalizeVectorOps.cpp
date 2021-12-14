@@ -281,7 +281,7 @@ SDValue VectorLegalizer::LegalizeOp(SDValue Op) {
         std::pair<SDValue, SDValue> Tmp = ExpandLoad(Node);
         AddLegalizedOperand(Op.getValue(0), Tmp.first);
         AddLegalizedOperand(Op.getValue(1), Tmp.second);
-        return Op.getResNo() ? Tmp.first : Tmp.second;
+        return Op.getResNo() ? Tmp.second : Tmp.first;
       }
       }
     }
@@ -731,7 +731,6 @@ SDValue VectorLegalizer::ExpandStore(SDNode *N) {
 }
 
 void VectorLegalizer::Expand(SDNode *Node, SmallVectorImpl<SDValue> &Results) {
-  SDValue Tmp;
   switch (Node->getOpcode()) {
   case ISD::MERGE_VALUES:
     for (unsigned i = 0, e = Node->getNumValues(); i != e; ++i)
@@ -804,15 +803,15 @@ void VectorLegalizer::Expand(SDNode *Node, SmallVectorImpl<SDValue> &Results) {
     break;
   case ISD::FSHL:
   case ISD::FSHR:
-    if (TLI.expandFunnelShift(Node, Tmp, DAG)) {
-      Results.push_back(Tmp);
+    if (SDValue Expanded = TLI.expandFunnelShift(Node, DAG)) {
+      Results.push_back(Expanded);
       return;
     }
     break;
   case ISD::ROTL:
   case ISD::ROTR:
-    if (TLI.expandROT(Node, false /*AllowVectorOps*/, Tmp, DAG)) {
-      Results.push_back(Tmp);
+    if (SDValue Expanded = TLI.expandROT(Node, false /*AllowVectorOps*/, DAG)) {
+      Results.push_back(Expanded);
       return;
     }
     break;
@@ -1095,6 +1094,10 @@ static void createBSWAPShuffleMask(EVT VT, SmallVectorImpl<int> &ShuffleMask) {
 SDValue VectorLegalizer::ExpandBSWAP(SDNode *Node) {
   EVT VT = Node->getValueType(0);
 
+  // Scalable vectors can't use shuffle expansion.
+  if (VT.isScalableVector())
+    return TLI.expandBSWAP(Node, DAG);
+
   // Generate a byte wise shuffle mask for the BSWAP.
   SmallVector<int, 16> ShuffleMask;
   createBSWAPShuffleMask(VT, ShuffleMask);
@@ -1123,6 +1126,12 @@ SDValue VectorLegalizer::ExpandBSWAP(SDNode *Node) {
 void VectorLegalizer::ExpandBITREVERSE(SDNode *Node,
                                        SmallVectorImpl<SDValue> &Results) {
   EVT VT = Node->getValueType(0);
+
+  // We can't unroll or use shuffles for scalable vectors.
+  if (VT.isScalableVector()) {
+    Results.push_back(TLI.expandBITREVERSE(Node, DAG));
+    return;
+  }
 
   // If we have the scalar operation, it's probably cheaper to unroll it.
   if (TLI.isOperationLegalOrCustom(ISD::BITREVERSE, VT.getScalarType())) {

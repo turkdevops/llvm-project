@@ -280,6 +280,16 @@ def StdC : StandardSpec<"stdc"> {
               [ArgSpec<ConstCharPtr>, ArgSpec<ConstCharPtr>]
           >,
           FunctionSpec<
+              "strdup",
+              RetValSpec<CharPtr>,
+              [ArgSpec<ConstCharPtr>]
+          >,
+          FunctionSpec<
+              "strndup",
+              RetValSpec<CharPtr>,
+              [ArgSpec<ConstCharPtr>,ArgSpec<SizeTType>]
+          >,
+          FunctionSpec<
               "strpbrk",
               RetValSpec<CharPtr>,
               [ArgSpec<ConstCharPtr>, ArgSpec<ConstCharPtr>]
@@ -506,12 +516,18 @@ def StdC : StandardSpec<"stdc"> {
 
           FunctionSpec<"qsort", RetValSpec<VoidType>, [ArgSpec<VoidPtr>, ArgSpec<SizeTType>, ArgSpec<SizeTType>, ArgSpec<QSortCompareT>]>,
 
-          FunctionSpec<"strtod", RetValSpec<DoubleType>, [ArgSpec<ConstCharRestrictedPtr>, ArgSpec<CharRestrictedPtrPtr>]>,
           FunctionSpec<"strtof", RetValSpec<FloatType>, [ArgSpec<ConstCharRestrictedPtr>, ArgSpec<CharRestrictedPtrPtr>]>,
+          FunctionSpec<"strtod", RetValSpec<DoubleType>, [ArgSpec<ConstCharRestrictedPtr>, ArgSpec<CharRestrictedPtrPtr>]>,
+          FunctionSpec<"strtold", RetValSpec<LongDoubleType>, [ArgSpec<ConstCharRestrictedPtr>, ArgSpec<CharRestrictedPtrPtr>]>,
           FunctionSpec<"strtol", RetValSpec<LongType>, [ArgSpec<ConstCharRestrictedPtr>, ArgSpec<CharRestrictedPtrPtr>, ArgSpec<IntType>]>,
           FunctionSpec<"strtoll", RetValSpec<LongLongType>, [ArgSpec<ConstCharRestrictedPtr>, ArgSpec<CharRestrictedPtrPtr>, ArgSpec<IntType>]>,
           FunctionSpec<"strtoul", RetValSpec<UnsignedLongType>, [ArgSpec<ConstCharRestrictedPtr>, ArgSpec<CharRestrictedPtrPtr>, ArgSpec<IntType>]>,
           FunctionSpec<"strtoull", RetValSpec<UnsignedLongLongType>, [ArgSpec<ConstCharRestrictedPtr>, ArgSpec<CharRestrictedPtrPtr>, ArgSpec<IntType>]>,
+
+          FunctionSpec<"malloc", RetValSpec<VoidPtr>, [ArgSpec<SizeTType>]>,
+          FunctionSpec<"calloc", RetValSpec<VoidPtr>, [ArgSpec<SizeTType>, ArgSpec<SizeTType>]>,
+          FunctionSpec<"realloc", RetValSpec<VoidPtr>, [ArgSpec<VoidPtr>, ArgSpec<SizeTType>]>,
+          FunctionSpec<"free", RetValSpec<VoidType>, [ArgSpec<VoidPtr>]>,
 
           FunctionSpec<"_Exit", RetValSpec<NoReturn>, [ArgSpec<IntType>]>,
       ]
