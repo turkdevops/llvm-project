@@ -1314,5 +1314,87 @@ TEST_F(FormatTestCSharp, CSharpAfterClass) {
                Style);
 }
 
+TEST_F(FormatTestCSharp, NamespaceIndentation) {
+  FormatStyle Style = getMicrosoftStyle(FormatStyle::LK_CSharp);
+  Style.NamespaceIndentation = FormatStyle::NI_None;
+
+  verifyFormat("namespace A\n"
+               "{\n"
+               "public interface Name1\n"
+               "{\n"
+               "}\n"
+               "}\n",
+               Style);
+
+  verifyFormat("namespace A.B\n"
+               "{\n"
+               "public interface Name1\n"
+               "{\n"
+               "}\n"
+               "}\n",
+               Style);
+
+  Style.NamespaceIndentation = FormatStyle::NI_Inner;
+
+  verifyFormat("namespace A\n"
+               "{\n"
+               "namespace B\n"
+               "{\n"
+               "    public interface Name1\n"
+               "    {\n"
+               "    }\n"
+               "}\n"
+               "}\n",
+               Style);
+
+  Style.NamespaceIndentation = FormatStyle::NI_All;
+
+  verifyFormat("namespace A.B\n"
+               "{\n"
+               "    public interface Name1\n"
+               "    {\n"
+               "    }\n"
+               "}\n",
+               Style);
+
+  verifyFormat("namespace A\n"
+               "{\n"
+               "    namespace B\n"
+               "    {\n"
+               "        public interface Name1\n"
+               "        {\n"
+               "        }\n"
+               "    }\n"
+               "}\n",
+               Style);
+}
+
+TEST_F(FormatTestCSharp, SwitchExpression) {
+  FormatStyle Style = getMicrosoftStyle(FormatStyle::LK_CSharp);
+  verifyFormat("int x = a switch {\n"
+               "    1 => (0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0),\n"
+               "    2 => 1,\n"
+               "    _ => 2\n"
+               "};\n",
+               Style);
+}
+
+TEST_F(FormatTestCSharp, EmptyShortBlock) {
+  auto Style = getLLVMStyle();
+  Style.AllowShortBlocksOnASingleLine = FormatStyle::SBS_Empty;
+
+  verifyFormat("try {\n"
+               "  doA();\n"
+               "} catch (Exception e) {\n"
+               "  e.printStackTrace();\n"
+               "}\n",
+               Style);
+
+  verifyFormat("try {\n"
+               "  doA();\n"
+               "} catch (Exception e) {}\n",
+               Style);
+}
+
 } // namespace format
 } // end namespace clang

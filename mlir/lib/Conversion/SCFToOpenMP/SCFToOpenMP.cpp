@@ -66,7 +66,7 @@ static bool matchSimpleReduction(Block &block) {
 ///     scf.reduce.return %1
 template <
     typename CompareOpTy, typename SelectOpTy,
-    typename Predicate = decltype(std::declval<CompareOpTy>().predicate())>
+    typename Predicate = decltype(std::declval<CompareOpTy>().getPredicate())>
 static bool
 matchSelectReduction(Block &block, ArrayRef<Predicate> lessThanPredicates,
                      ArrayRef<Predicate> greaterThanPredicates, bool &isMin) {
@@ -92,17 +92,17 @@ matchSelectReduction(Block &block, ArrayRef<Predicate> lessThanPredicates,
 
   // Detect whether the comparison is less-than or greater-than, otherwise bail.
   bool isLess;
-  if (llvm::find(lessThanPredicates, compare.predicate()) !=
+  if (llvm::find(lessThanPredicates, compare.getPredicate()) !=
       lessThanPredicates.end()) {
     isLess = true;
-  } else if (llvm::find(greaterThanPredicates, compare.predicate()) !=
+  } else if (llvm::find(greaterThanPredicates, compare.getPredicate()) !=
              greaterThanPredicates.end()) {
     isLess = false;
   } else {
     return false;
   }
 
-  if (select.condition() != compare.getResult())
+  if (select.getCondition() != compare.getResult())
     return false;
 
   // Detect if the operands are swapped between cmpf and select. Match the
@@ -112,10 +112,10 @@ matchSelectReduction(Block &block, ArrayRef<Predicate> lessThanPredicates,
   // positions.
   constexpr unsigned kTrueValue = 1;
   constexpr unsigned kFalseValue = 2;
-  bool sameOperands = select.getOperand(kTrueValue) == compare.lhs() &&
-                      select.getOperand(kFalseValue) == compare.rhs();
-  bool swappedOperands = select.getOperand(kTrueValue) == compare.rhs() &&
-                         select.getOperand(kFalseValue) == compare.lhs();
+  bool sameOperands = select.getOperand(kTrueValue) == compare.getLhs() &&
+                      select.getOperand(kFalseValue) == compare.getRhs();
+  bool swappedOperands = select.getOperand(kTrueValue) == compare.getRhs() &&
+                         select.getOperand(kFalseValue) == compare.getLhs();
   if (!sameOperands && !swappedOperands)
     return false;
 
@@ -451,7 +451,7 @@ struct SCFToOpenMPPass : public ConvertSCFToOpenMPBase<SCFToOpenMPPass> {
   }
 };
 
-} // end namespace
+} // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>> mlir::createConvertSCFToOpenMPPass() {
   return std::make_unique<SCFToOpenMPPass>();

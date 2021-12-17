@@ -73,7 +73,7 @@ public:
 
 // Class of object that encapsulates latest instruction counter score
 // associated with the operand.  Used for determining whether
-// s_waitcnt instruction needs to be emited.
+// s_waitcnt instruction needs to be emitted.
 
 #define CNT_MASK(t) (1u << (t))
 
@@ -150,6 +150,8 @@ enum VmemType {
   VMEM_NOSAMPLER,
   // MIMG instructions with a sampler.
   VMEM_SAMPLER,
+  // BVH instructions
+  VMEM_BVH
 };
 
 VmemType getVmemType(const MachineInstr &Inst) {
@@ -157,9 +159,10 @@ VmemType getVmemType(const MachineInstr &Inst) {
   if (!SIInstrInfo::isMIMG(Inst))
     return VMEM_NOSAMPLER;
   const AMDGPU::MIMGInfo *Info = AMDGPU::getMIMGInfo(Inst.getOpcode());
-  return AMDGPU::getMIMGBaseOpcodeInfo(Info->BaseOpcode)->Sampler
-             ? VMEM_SAMPLER
-             : VMEM_NOSAMPLER;
+  const AMDGPU::MIMGBaseOpcodeInfo *BaseInfo =
+      AMDGPU::getMIMGBaseOpcodeInfo(Info->BaseOpcode);
+  return BaseInfo->BVH ? VMEM_BVH
+                       : BaseInfo->Sampler ? VMEM_SAMPLER : VMEM_NOSAMPLER;
 }
 
 void addWait(AMDGPU::Waitcnt &Wait, InstCounterType T, unsigned Count) {
@@ -963,6 +966,7 @@ bool SIInsertWaitcnts::generateWaitcntInstBefore(
   //   with knowledge of the called routines.
   if (MI.getOpcode() == AMDGPU::SI_RETURN_TO_EPILOG ||
       MI.getOpcode() == AMDGPU::S_SETPC_B64_return ||
+      MI.getOpcode() == AMDGPU::S_SETPC_B64_return_gfx ||
       (MI.isReturn() && MI.isCall() && !callWaitsOnFunctionEntry(MI))) {
     Wait = Wait.combined(AMDGPU::Waitcnt::allZero(ST->hasVscnt()));
   }
@@ -1682,49 +1686,47 @@ bool SIInsertWaitcnts::runOnMachineFunction(MachineFunction &MF) {
     }
   } while (Repeat);
 
-  SmallVector<MachineBasicBlock *, 4> EndPgmBlocks;
+  if (ST->hasScalarStores()) {
+    SmallVector<MachineBasicBlock *, 4> EndPgmBlocks;
+    bool HaveScalarStores = false;
 
-  bool HaveScalarStores = false;
+    for (MachineBasicBlock &MBB : MF) {
+      for (MachineInstr &MI : MBB) {
+        if (!HaveScalarStores && TII->isScalarStore(MI))
+          HaveScalarStores = true;
 
-  for (MachineFunction::iterator BI = MF.begin(), BE = MF.end(); BI != BE;
-       ++BI) {
-    MachineBasicBlock &MBB = *BI;
-
-    for (MachineBasicBlock::iterator I = MBB.begin(), E = MBB.end(); I != E;
-         ++I) {
-      if (!HaveScalarStores && TII->isScalarStore(*I))
-        HaveScalarStores = true;
-
-      if (I->getOpcode() == AMDGPU::S_ENDPGM ||
-          I->getOpcode() == AMDGPU::SI_RETURN_TO_EPILOG)
-        EndPgmBlocks.push_back(&MBB);
+        if (MI.getOpcode() == AMDGPU::S_ENDPGM ||
+            MI.getOpcode() == AMDGPU::SI_RETURN_TO_EPILOG)
+          EndPgmBlocks.push_back(&MBB);
+      }
     }
-  }
 
-  if (HaveScalarStores) {
-    // If scalar writes are used, the cache must be flushed or else the next
-    // wave to reuse the same scratch memory can be clobbered.
-    //
-    // Insert s_dcache_wb at wave termination points if there were any scalar
-    // stores, and only if the cache hasn't already been flushed. This could be
-    // improved by looking across blocks for flushes in postdominating blocks
-    // from the stores but an explicitly requested flush is probably very rare.
-    for (MachineBasicBlock *MBB : EndPgmBlocks) {
-      bool SeenDCacheWB = false;
+    if (HaveScalarStores) {
+      // If scalar writes are used, the cache must be flushed or else the next
+      // wave to reuse the same scratch memory can be clobbered.
+      //
+      // Insert s_dcache_wb at wave termination points if there were any scalar
+      // stores, and only if the cache hasn't already been flushed. This could
+      // be improved by looking across blocks for flushes in postdominating
+      // blocks from the stores but an explicitly requested flush is probably
+      // very rare.
+      for (MachineBasicBlock *MBB : EndPgmBlocks) {
+        bool SeenDCacheWB = false;
 
-      for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end(); I != E;
-           ++I) {
-        if (I->getOpcode() == AMDGPU::S_DCACHE_WB)
-          SeenDCacheWB = true;
-        else if (TII->isScalarStore(*I))
-          SeenDCacheWB = false;
+        for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end();
+             I != E; ++I) {
+          if (I->getOpcode() == AMDGPU::S_DCACHE_WB)
+            SeenDCacheWB = true;
+          else if (TII->isScalarStore(*I))
+            SeenDCacheWB = false;
 
-        // FIXME: It would be better to insert this before a waitcnt if any.
-        if ((I->getOpcode() == AMDGPU::S_ENDPGM ||
-             I->getOpcode() == AMDGPU::SI_RETURN_TO_EPILOG) &&
-            !SeenDCacheWB) {
-          Modified = true;
-          BuildMI(*MBB, I, I->getDebugLoc(), TII->get(AMDGPU::S_DCACHE_WB));
+          // FIXME: It would be better to insert this before a waitcnt if any.
+          if ((I->getOpcode() == AMDGPU::S_ENDPGM ||
+               I->getOpcode() == AMDGPU::SI_RETURN_TO_EPILOG) &&
+              !SeenDCacheWB) {
+            Modified = true;
+            BuildMI(*MBB, I, I->getDebugLoc(), TII->get(AMDGPU::S_DCACHE_WB));
+          }
         }
       }
     }
