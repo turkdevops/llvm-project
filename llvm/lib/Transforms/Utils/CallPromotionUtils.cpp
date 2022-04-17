@@ -279,8 +279,8 @@ static void createRetBitCast(CallBase &CB, Type *RetTy, CastInst **RetBitCast) {
 ///     ; The original call instruction stays in its original block.
 ///     %t0 = musttail call i32 %ptr()
 ///     ret %t0
-static CallBase &versionCallSite(CallBase &CB, Value *Callee,
-                                 MDNode *BranchWeights) {
+CallBase &llvm::versionCallSite(CallBase &CB, Value *Callee,
+                                MDNode *BranchWeights) {
 
   IRBuilder<> Builder(&CB);
   CallBase *OrigInst = &CB;
@@ -518,7 +518,7 @@ CallBase &llvm::promoteCall(CallBase &CB, Function *Callee,
   // If the return type of the call site doesn't match that of the callee, cast
   // the returned value to the appropriate type.
   // Remove any incompatible return value attribute.
-  AttrBuilder RAttrs(Ctx, CallerPAL, AttributeList::ReturnIndex);
+  AttrBuilder RAttrs(Ctx, CallerPAL.getRetAttrs());
   if (!CallSiteRetTy->isVoidTy() && CallSiteRetTy != CalleeRetTy) {
     createRetBitCast(CB, CallSiteRetTy, RetBitCast);
     RAttrs.remove(AttributeFuncs::typeIncompatible(CalleeRetTy));

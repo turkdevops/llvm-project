@@ -22,6 +22,7 @@
 #include "clang/AST/TypeLoc.h"
 #include "clang/AST/TypeLocVisitor.h"
 #include "clang/Basic/PartialDiagnostic.h"
+#include "clang/Basic/Specifiers.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/DeclSpec.h"
@@ -235,8 +236,8 @@ namespace {
       if (hasSavedAttrs) return;
 
       DeclSpec &spec = getMutableDeclSpec();
-      for (ParsedAttr &AL : spec.getAttributes())
-        savedAttrs.push_back(&AL);
+      llvm::append_range(savedAttrs,
+                         llvm::make_pointer_range(spec.getAttributes()));
       trivial &= savedAttrs.empty();
       hasSavedAttrs = true;
     }
@@ -263,6 +264,12 @@ namespace {
       AttrsForTypes.push_back({cast<AttributedType>(T.getTypePtr()), A});
       AttrsForTypesSorted = false;
       return T;
+    }
+
+    /// Get a BTFTagAttributed type for the btf_type_tag attribute.
+    QualType getBTFTagAttributedType(const BTFTypeTagAttr *BTFAttr,
+                                     QualType WrappedType) {
+      return sema.Context.getBTFTagAttributedType(BTFAttr, WrappedType);
     }
 
     /// Completely replace the \c auto in \p TypeWithAuto by
@@ -361,7 +368,8 @@ enum TypeAttrLocation {
 };
 
 static void processTypeAttrs(TypeProcessingState &state, QualType &type,
-                             TypeAttrLocation TAL, ParsedAttributesView &attrs);
+                             TypeAttrLocation TAL,
+                             const ParsedAttributesView &attrs);
 
 static bool handleFunctionTypeAttr(TypeProcessingState &state, ParsedAttr &attr,
                                    QualType &type);
@@ -1873,6 +1881,14 @@ static std::string getPrintableNameForEntity(DeclarationName Entity) {
   return "type name";
 }
 
+static bool isDependentOrGNUAutoType(QualType T) {
+  if (T->isDependentType())
+    return true;
+
+  const auto *AT = dyn_cast<AutoType>(T);
+  return AT && AT->isGNUAutoType();
+}
+
 QualType Sema::BuildQualifiedType(QualType T, SourceLocation Loc,
                                   Qualifiers Qs, const DeclSpec *DS) {
   if (T.isNull())
@@ -1906,7 +1922,10 @@ QualType Sema::BuildQualifiedType(QualType T, SourceLocation Loc,
         DiagID = diag::err_typecheck_invalid_restrict_invalid_pointee;
         ProblemTy = EltTy;
       }
-    } else if (!T->isDependentType()) {
+    } else if (!isDependentOrGNUAutoType(T)) {
+      // For an __auto_type variable, we may not have seen the initializer yet
+      // and so have no idea whether the underlying type is a pointer type or
+      // not.
       DiagID = diag::err_typecheck_invalid_restrict_not_pointer;
       ProblemTy = T;
     }
@@ -2124,6 +2143,11 @@ QualType Sema::BuildPointerType(QualType T,
     return QualType();
   }
 
+  if (getLangOpts().HLSL) {
+    Diag(Loc, diag::err_hlsl_pointers_unsupported) << 0;
+    return QualType();
+  }
+
   if (checkQualifiedFunction(*this, T, Loc, QFK_Pointer))
     return QualType();
 
@@ -2186,6 +2210,11 @@ QualType Sema::BuildReferenceType(QualType T, bool SpelledAsLValue,
   //   is ill-formed.
   if (T->isVoidType()) {
     Diag(Loc, diag::err_reference_to_void);
+    return QualType();
+  }
+
+  if (getLangOpts().HLSL) {
+    Diag(Loc, diag::err_hlsl_pointers_unsupported) << 1;
     return QualType();
   }
 
@@ -2256,7 +2285,7 @@ QualType Sema::BuildBitIntType(bool IsUnsigned, Expr *BitWidth,
   if (ICE.isInvalid())
     return QualType();
 
-  int64_t NumBits = Bits.getSExtValue();
+  size_t NumBits = Bits.getZExtValue();
   if (!IsUnsigned && NumBits < 2) {
     Diag(Loc, diag::err_bit_int_bad_size) << 0;
     return QualType();
@@ -2267,9 +2296,10 @@ QualType Sema::BuildBitIntType(bool IsUnsigned, Expr *BitWidth,
     return QualType();
   }
 
-  if (NumBits > llvm::IntegerType::MAX_INT_BITS) {
+  const TargetInfo &TI = getASTContext().getTargetInfo();
+  if (NumBits > TI.getMaxBitIntWidth()) {
     Diag(Loc, diag::err_bit_int_max_size)
-        << IsUnsigned << llvm::IntegerType::MAX_INT_BITS;
+        << IsUnsigned << static_cast<uint64_t>(TI.getMaxBitIntWidth());
     return QualType();
   }
 
@@ -2456,6 +2486,9 @@ QualType Sema::BuildArrayType(QualType T, ArrayType::ArraySizeModifier ASM,
   } else if (isSFINAEContext()) {
     VLADiag = diag::err_vla_in_sfinae;
     VLAIsError = true;
+  } else if (getLangOpts().OpenMP && isInOpenMPTaskUntiedContext()) {
+    VLADiag = diag::err_openmp_vla_in_task_untied;
+    VLAIsError = true;
   } else {
     VLADiag = diag::ext_vla;
     VLAIsError = false;
@@ -2639,9 +2672,12 @@ QualType Sema::BuildExtVectorType(QualType T, Expr *ArraySize,
   // reserved data type under OpenCL v2.0 s6.1.4), we don't support selects
   // on bitvectors, and we have no well-defined ABI for bitvectors, so vectors
   // of bool aren't allowed.
+  //
+  // We explictly allow bool elements in ext_vector_type for C/C++.
+  bool IsNoBoolVecLang = getLangOpts().OpenCL || getLangOpts().OpenCLCPlusPlus;
   if ((!T->isDependentType() && !T->isIntegerType() &&
        !T->isRealFloatingType()) ||
-      T->isBooleanType()) {
+      (IsNoBoolVecLang && T->isBooleanType())) {
     Diag(AttrLoc, diag::err_attribute_invalid_vector_type) << T;
     return QualType();
   }
@@ -2938,6 +2974,11 @@ QualType Sema::BuildMemberPointerType(QualType T, QualType Class,
       !getOpenCLOptions().isAvailableOption("__cl_clang_function_pointers",
                                             getLangOpts())) {
     Diag(Loc, diag::err_opencl_function_pointer) << /*pointer*/ 0;
+    return QualType();
+  }
+
+  if (getLangOpts().HLSL) {
+    Diag(Loc, diag::err_hlsl_pointers_unsupported) << 0;
     return QualType();
   }
 
@@ -3504,6 +3545,9 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
     case DeclaratorContext::FunctionalCast:
       if (isa<DeducedTemplateSpecializationType>(Deduced))
         break;
+      if (SemaRef.getLangOpts().CPlusPlus2b && IsCXXAutoType &&
+          !Auto->isDecltypeAuto())
+        break; // auto(x)
       LLVM_FALLTHROUGH;
     case DeclaratorContext::TypeName:
       Error = 15; // Generic
@@ -5235,7 +5279,9 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         // function is marked with the "overloadable" attribute. Scan
         // for this attribute now.
         if (!FTI.NumParams && FTI.isVariadic && !LangOpts.CPlusPlus)
-          if (!D.getAttributes().hasAttribute(ParsedAttr::AT_Overloadable))
+          if (!D.getAttributes().hasAttribute(ParsedAttr::AT_Overloadable) &&
+              !D.getDeclSpec().getAttributes().hasAttribute(
+                  ParsedAttr::AT_Overloadable))
             S.Diag(FTI.getEllipsisLoc(), diag::err_ellipsis_first_param);
 
         if (FTI.NumParams && FTI.Params[0].Param == nullptr) {
@@ -5517,15 +5563,16 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
            diag::warn_noderef_on_non_pointer_or_array);
 
   // GNU warning -Wstrict-prototypes
-  //   Warn if a function declaration is without a prototype.
+  //   Warn if a function declaration or definition is without a prototype.
   //   This warning is issued for all kinds of unprototyped function
   //   declarations (i.e. function type typedef, function pointer etc.)
   //   C99 6.7.5.3p14:
   //   The empty list in a function declarator that is not part of a definition
   //   of that function specifies that no information about the number or types
   //   of the parameters is supplied.
-  if (!LangOpts.CPlusPlus &&
-      D.getFunctionDefinitionKind() == FunctionDefinitionKind::Declaration) {
+  // See ActOnFinishFunctionBody() and MergeFunctionDecl() for handling of
+  // function declarations whose behavior changes in C2x.
+  if (!LangOpts.CPlusPlus) {
     bool IsBlock = false;
     for (const DeclaratorChunk &DeclType : D.type_objects()) {
       switch (DeclType.Kind) {
@@ -5905,6 +5952,9 @@ namespace {
       Visit(TL.getModifiedLoc());
       fillAttributedTypeLoc(TL, State);
     }
+    void VisitBTFTagAttributedTypeLoc(BTFTagAttributedTypeLoc TL) {
+      Visit(TL.getWrappedLoc());
+    }
     void VisitMacroQualifiedTypeLoc(MacroQualifiedTypeLoc TL) {
       Visit(TL.getInnerLoc());
       TL.setExpansionLoc(
@@ -6041,6 +6091,8 @@ namespace {
              DS.getTypeSpecType() == TST_auto_type ||
              DS.getTypeSpecType() == TST_unspecified);
       TL.setNameLoc(DS.getTypeSpecTypeLoc());
+      if (DS.getTypeSpecType() == TST_decltype_auto)
+        TL.setRParenLoc(DS.getTypeofParensRange().getEnd());
       if (!DS.isConstrainedAuto())
         return;
       TemplateIdAnnotation *TemplateId = DS.getRepAsTemplateId();
@@ -6128,6 +6180,9 @@ namespace {
 
     void VisitAttributedTypeLoc(AttributedTypeLoc TL) {
       fillAttributedTypeLoc(TL, State);
+    }
+    void VisitBTFTagAttributedTypeLoc(BTFTagAttributedTypeLoc TL) {
+      // nothing
     }
     void VisitAdjustedTypeLoc(AdjustedTypeLoc TL) {
       // nothing
@@ -6544,8 +6599,8 @@ static void HandleBTFTypeTagAttribute(QualType &Type, const ParsedAttr &Attr,
 
   ASTContext &Ctx = S.Context;
   StringRef BTFTypeTag = StrLiteral->getString();
-  Type = State.getAttributedType(
-      ::new (Ctx) BTFTypeTagAttr(Ctx, Attr, BTFTypeTag), Type, Type);
+  Type = State.getBTFTagAttributedType(
+      ::new (Ctx) BTFTypeTagAttr(Ctx, Attr, BTFTypeTag), Type);
 }
 
 /// HandleAddressSpaceTypeAttribute - Process an address_space attribute on the
@@ -8111,7 +8166,12 @@ static bool isAddressSpaceKind(const ParsedAttr &attr) {
 
 static void processTypeAttrs(TypeProcessingState &state, QualType &type,
                              TypeAttrLocation TAL,
-                             ParsedAttributesView &attrs) {
+                             const ParsedAttributesView &attrs) {
+
+  state.setParsedNoDeref(false);
+  if (attrs.empty())
+    return;
+
   // Scan through and apply attributes to this type where it makes sense.  Some
   // attributes (such as __address_space__, __vector_size__, etc) apply to the
   // type, but others can be present in the type specifiers even though they
@@ -8121,9 +8181,6 @@ static void processTypeAttrs(TypeProcessingState &state, QualType &type,
   // sure we visit every element once. Copy the attributes list, and iterate
   // over that.
   ParsedAttributesView AttrsCopy{attrs};
-
-  state.setParsedNoDeref(false);
-
   for (ParsedAttr &attr : AttrsCopy) {
 
     // Skip attributes that were marked to be invalid.
@@ -9074,7 +9131,7 @@ QualType Sema::BuildUnaryTransformType(QualType BaseType,
 }
 
 QualType Sema::BuildAtomicType(QualType T, SourceLocation Loc) {
-  if (!T->isDependentType()) {
+  if (!isDependentOrGNUAutoType(T)) {
     // FIXME: It isn't entirely clear whether incomplete atomic types
     // are allowed or not; for simplicity, ban them for the moment.
     if (RequireCompleteType(Loc, T, diag::err_atomic_specifier_bad_type, 0))

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/SPIRV/Transforms/SPIRVConversion.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVOps.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -552,7 +553,7 @@ public:
 LogicalResult
 FuncOpConversion::matchAndRewrite(FuncOp funcOp, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const {
-  auto fnType = funcOp.getType();
+  auto fnType = funcOp.getFunctionType();
   if (fnType.getNumResults() > 1)
     return failure();
 
@@ -580,7 +581,7 @@ FuncOpConversion::matchAndRewrite(FuncOp funcOp, OpAdaptor adaptor,
 
   // Copy over all attributes other than the function name and type.
   for (const auto &namedAttr : funcOp->getAttrs()) {
-    if (namedAttr.getName() != function_like_impl::getTypeAttrName() &&
+    if (namedAttr.getName() != FunctionOpInterface::getTypeAttrName() &&
         namedAttr.getName() != SymbolTable::getSymbolAttrName())
       newFuncOp->setAttr(namedAttr.getName(), namedAttr.getValue());
   }

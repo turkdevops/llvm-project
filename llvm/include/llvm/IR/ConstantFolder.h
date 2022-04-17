@@ -20,7 +20,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilderFolder.h"
-#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 
 namespace llvm {
@@ -44,6 +43,14 @@ public:
     auto *RC = dyn_cast<Constant>(RHS);
     if (LC && RC)
       return ConstantExpr::getAdd(LC, RC, HasNUW, HasNSW);
+    return nullptr;
+  }
+
+  Value *FoldAnd(Value *LHS, Value *RHS) const override {
+    auto *LC = dyn_cast<Constant>(LHS);
+    auto *RC = dyn_cast<Constant>(RHS);
+    if (LC && RC)
+      return ConstantExpr::getAnd(LC, RC);
     return nullptr;
   }
 
@@ -75,6 +82,15 @@ public:
       else
         return ConstantExpr::getGetElementPtr(Ty, PC, IdxList);
     }
+    return nullptr;
+  }
+
+  Value *FoldSelect(Value *C, Value *True, Value *False) const override {
+    auto *CC = dyn_cast<Constant>(C);
+    auto *TC = dyn_cast<Constant>(True);
+    auto *FC = dyn_cast<Constant>(False);
+    if (CC && TC && FC)
+      return ConstantExpr::getSelect(CC, TC, FC);
     return nullptr;
   }
 
@@ -143,10 +159,6 @@ public:
   Constant *CreateAShr(Constant *LHS, Constant *RHS,
                        bool isExact = false) const override {
     return ConstantExpr::getAShr(LHS, RHS, isExact);
-  }
-
-  Constant *CreateAnd(Constant *LHS, Constant *RHS) const override {
-    return ConstantExpr::getAnd(LHS, RHS);
   }
 
   Constant *CreateOr(Constant *LHS, Constant *RHS) const {
@@ -246,11 +258,6 @@ public:
   //===--------------------------------------------------------------------===//
   // Other Instructions
   //===--------------------------------------------------------------------===//
-
-  Constant *CreateSelect(Constant *C, Constant *True,
-                         Constant *False) const override {
-    return ConstantExpr::getSelect(C, True, False);
-  }
 
   Constant *CreateExtractElement(Constant *Vec, Constant *Idx) const override {
     return ConstantExpr::getExtractElement(Vec, Idx);

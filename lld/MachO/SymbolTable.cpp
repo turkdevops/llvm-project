@@ -96,10 +96,16 @@ Defined *SymbolTable::addDefined(StringRef name, InputFile *file,
     // of a name conflict, we fall through to the replaceSymbol() call below.
   }
 
+  // With -flat_namespace, all extern symbols in dylibs are interposable.
+  // FIXME: Add support for `-interposable` (PR53680).
+  bool interposable = config->namespaceKind == NamespaceKind::flat &&
+                      config->outputType != MachO::MH_EXECUTE &&
+                      !isPrivateExtern;
   Defined *defined = replaceSymbol<Defined>(
       s, name, file, isec, value, size, isWeakDef, /*isExternal=*/true,
-      isPrivateExtern, isThumb, isReferencedDynamically, noDeadStrip,
-      overridesWeakDef, isWeakDefCanBeHidden);
+      isPrivateExtern, /*includeInSymtab=*/true, isThumb,
+      isReferencedDynamically, noDeadStrip, overridesWeakDef,
+      isWeakDefCanBeHidden, interposable);
   return defined;
 }
 
@@ -115,6 +121,8 @@ Symbol *SymbolTable::addUndefined(StringRef name, InputFile *file,
     replaceSymbol<Undefined>(s, name, file, refState);
   else if (auto *lazy = dyn_cast<LazyArchive>(s))
     lazy->fetchArchiveMember();
+  else if (isa<LazyObject>(s))
+    extract(*s->getFile(), s->getName());
   else if (auto *dynsym = dyn_cast<DylibSymbol>(s))
     dynsym->reference(refState);
   else if (auto *undefined = dyn_cast<Undefined>(s))
@@ -199,15 +207,36 @@ Symbol *SymbolTable::addLazyArchive(StringRef name, ArchiveFile *file,
   return s;
 }
 
+Symbol *SymbolTable::addLazyObject(StringRef name, InputFile &file) {
+  Symbol *s;
+  bool wasInserted;
+  std::tie(s, wasInserted) = insert(name, &file);
+
+  if (wasInserted) {
+    replaceSymbol<LazyObject>(s, file, name);
+  } else if (isa<Undefined>(s)) {
+    extract(file, name);
+  } else if (auto *dysym = dyn_cast<DylibSymbol>(s)) {
+    if (dysym->isWeakDef()) {
+      if (dysym->getRefState() != RefState::Unreferenced)
+        extract(file, name);
+      else
+        replaceSymbol<LazyObject>(s, file, name);
+    }
+  }
+  return s;
+}
+
 Defined *SymbolTable::addSynthetic(StringRef name, InputSection *isec,
                                    uint64_t value, bool isPrivateExtern,
                                    bool includeInSymtab,
                                    bool referencedDynamically) {
+  assert(!isec || !isec->getFile()); // See makeSyntheticInputSection().
   Defined *s =
-      addDefined(name, nullptr, isec, value, /*size=*/0,
-                 /*isWeakDef=*/false, isPrivateExtern,
-                 /*isThumb=*/false, referencedDynamically,
-                 /*noDeadStrip=*/false, /*isWeakDefCanBeHidden=*/false);
+      addDefined(name, /*file=*/nullptr, isec, value, /*size=*/0,
+                 /*isWeakDef=*/false, isPrivateExtern, /*isThumb=*/false,
+                 referencedDynamically, /*noDeadStrip=*/false,
+                 /*isWeakDefCanBeHidden=*/false);
   s->includeInSymtab = includeInSymtab;
   return s;
 }
@@ -244,7 +273,7 @@ static void handleSectionBoundarySymbol(const Undefined &sym, StringRef segSect,
     }
 
   if (!osec) {
-    ConcatInputSection *isec = make<ConcatInputSection>(segName, sectName);
+    ConcatInputSection *isec = makeSyntheticInputSection(segName, sectName);
 
     // This runs after markLive() and is only called for Undefineds that are
     // live. Marking the isec live ensures an OutputSection is created that the

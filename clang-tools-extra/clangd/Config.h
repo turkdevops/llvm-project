@@ -17,7 +17,7 @@
 //
 // Because this structure is shared throughout clangd, it's a potential source
 // of layering problems. Config should be expressed in terms of simple
-// vocubulary types where possible.
+// vocabulary types where possible.
 //
 //===----------------------------------------------------------------------===//
 
@@ -130,6 +130,7 @@ struct Config {
     // Whether specific categories of hints are enabled.
     bool Parameters = true;
     bool DeducedTypes = true;
+    bool Designators = false;
   } InlayHints;
 };
 

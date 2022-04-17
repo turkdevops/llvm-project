@@ -14,6 +14,7 @@
 #ifndef BUILTIN_TYPES
 #define BUILTIN_TYPES
 
+include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinDialect.td"
 include "mlir/IR/BuiltinTypeInterfaces.td"
 include "mlir/IR/SubElementInterfaces.td"
@@ -154,6 +155,10 @@ def Builtin_Function : Builtin_Type<"Function", [
     unsigned getNumResults() const;
     Type getResult(unsigned i) const { return getResults()[i]; }
 
+    /// Returns a clone of this function type with the given argument
+    /// and result types.
+    FunctionType clone(TypeRange inputs, TypeRange results) const;
+
     /// Returns a new function type with the specified arguments and results
     /// inserted.
     FunctionType getWithArgsAndResults(ArrayRef<unsigned> argIndices,
@@ -162,8 +167,8 @@ def Builtin_Function : Builtin_Type<"Function", [
                                        TypeRange resultTypes);
 
     /// Returns a new function type without the specified arguments and results.
-    FunctionType getWithoutArgsAndResults(ArrayRef<unsigned> argIndices,
-                                          ArrayRef<unsigned> resultIndices);
+    FunctionType getWithoutArgsAndResults(const BitVector &argIndices,
+                                          const BitVector &resultIndices);
   }];
 }
 
@@ -182,7 +187,7 @@ def Builtin_Index : Builtin_Type<"Index"> {
     ```
 
     The index type is a signless integer whose size is equal to the natural
-    machine word of the target ( [rationale](https://mlir.llvm.org/docs/Rationale/Rationale/#integer-signedness-semantics) )
+    machine word of the target ( [rationale](../../Rationale/Rationale/#integer-signedness-semantics) )
     and is used by the affine constructs in MLIR.
 
     **Rationale:** integers of platform-specific bit widths are practical to
@@ -750,7 +755,7 @@ def Builtin_Tuple : Builtin_Type<"Tuple", [
 
     **Rationale:** Though this type is first class in the type system, MLIR
     provides no standard operations for operating on `tuple` types
-    ([rationale](Rationale/Rationale/#tuple-types)).
+    ([rationale](../../Rationale/Rationale/#tuple-types)).
 
     Examples:
 

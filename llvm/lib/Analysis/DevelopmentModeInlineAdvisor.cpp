@@ -11,9 +11,9 @@
 //
 //===----------------------------------------------------------------------===//
 #include "llvm/Config/config.h"
-#include "llvm/Support/Casting.h"
 #if defined(LLVM_HAVE_TF_API)
 
+#include "llvm/ADT/BitVector.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/InlineSizeEstimatorAnalysis.h"
 #include "llvm/Analysis/MLInlineAdvisor.h"
@@ -112,7 +112,7 @@ private:
   StringRef LogFileName;
   const ModelUnderTrainingRunner *const MUTR;
   std::unique_ptr<Logger> L;
-  std::vector<bool> Effects;
+  BitVector Effects;
   /// There's at least one output. We'll set this to a different value if MUTR
   /// is avaliable.
   size_t OutputCount = 1;

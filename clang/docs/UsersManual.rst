@@ -1132,10 +1132,28 @@ A ``#include`` directive which finds a file relative to the current
 directory is treated as including a system header if the including file
 is treated as a system header.
 
+Controlling Deprecation Diagnostics in Clang-Provided C Runtime Headers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Clang is responsible for providing some of the C runtime headers that cannot be
+provided by a platform CRT, such as implementation limits or when compiling in
+freestanding mode. Define the ``_CLANG_DISABLE_CRT_DEPRECATION_WARNINGS`` macro
+prior to including such a C runtime header to disable the deprecation warnings.
+Note that the C Standard Library headers are allowed to transitively include
+other standard library headers (see 7.1.2p5), and so the most appropriate use
+of this macro is to set it within the build system using ``-D`` or before any
+include directives in the translation unit.
+
+.. code-block:: c
+
+  #define _CLANG_DISABLE_CRT_DEPRECATION_WARNINGS
+  #include <stdint.h>    // Clang CRT deprecation warnings are disabled.
+  #include <stdatomic.h> // Clang CRT deprecation warnings are disabled.
+
 .. _diagnostics_enable_everything:
 
 Enabling All Diagnostics
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 In addition to the traditional ``-W`` flags, one can enable **all** diagnostics
 by passing :option:`-Weverything`. This works as expected with
@@ -1548,6 +1566,22 @@ Note that floating-point operations performed as part of constant initialization
    * ``maytrap`` The compiler avoids transformations that may raise exceptions that would not have been raised by the original code. Constant folding performed by the compiler is exempt from this option.
    * ``strict`` The compiler ensures that all transformations strictly preserve the floating point exception semantics of the original code.
 
+.. option:: -ffp-eval-method=<value>
+
+   Specify the floating-point evaluation method for intermediate results within
+   a single expression of the code.
+
+   Valid values are: ``source``, ``double``, and ``extended``.
+   For 64-bit targets, the default value is ``source``. For 32-bit x86 targets
+   however, in the case of NETBSD 6.99.26 and under, the default value is
+   ``double``; in the case of NETBSD greater than 6.99.26, with NoSSE, the
+   default value is ``extended``, with SSE the default value is ``source``.
+   Details:
+
+   * ``source`` The compiler uses the floating-point type declared in the source program as the evaluation method.
+   * ``double`` The compiler uses ``double`` as the floating-point evaluation method for all float expressions of type that is narrower than ``double``.
+   * ``extended`` The compiler uses ``long double`` as the floating-point evaluation method for all float expressions of type that is narrower than ``long double``.
+
 .. option:: -f[no-]protect-parens:
 
    This option pertains to floating-point types, complex types with
@@ -1568,6 +1602,17 @@ Note that floating-point operations performed as part of constant initialization
    modes, such as `-ffp-model=precise` or `-ffp-model=strict`, this option
    has no effect because the optimizer is prohibited from making unsafe
    transformations.
+
+.. _FLT_EVAL_METHOD:
+
+A note about ``__FLT_EVAL_METHOD__``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The macro ``__FLT_EVAL_METHOD__`` will expand to either the value set from the
+command line option ``ffp-eval-method`` or to the value from the target info
+setting. The ``__FLT_EVAL_METHOD__`` macro cannot expand to the correct
+evaluation method in the presence of a ``#pragma`` which alters the evaluation
+method. An error is issued if ``__FLT_EVAL_METHOD__`` is expanded inside a scope
+modified by ``#pragma clang fp eval_method``.
 
 .. _fp-constant-eval:
 
@@ -2531,12 +2576,6 @@ using the ``llvm-cxxmap`` and ``llvm-profdata merge`` tools.
 
 .. note::
 
-  Profile data remapping support is currently only implemented for LLVM's
-  new pass manager, which can be enabled with
-  ``-fexperimental-new-pass-manager``.
-
-.. note::
-
   Profile data remapping is currently only supported for C++ mangled names
   following the Itanium C++ ABI mangling scheme. This covers all C++ targets
   supported by Clang other than Windows.
@@ -3042,9 +3081,8 @@ profile.
 Starting from clang 9 a C++ mode is available for OpenCL (see
 :ref:`C++ for OpenCL <cxx_for_opencl>`).
 
-There is ongoing support for OpenCL v3.0 that is documented along with other
-experimental functionality and features in development on :doc:`OpenCLSupport`
-page.
+OpenCL v3.0 support is complete but it remains in experimental state, see more
+details about the experimental features in :doc:`OpenCLSupport` page.
 
 OpenCL Specific Options
 -----------------------
@@ -3639,7 +3677,7 @@ When using CMake and the Visual Studio generators, the toolset can be set with t
 
   ::
 
-    cmake -G"Visual Studio 15 2017" -T LLVM ..
+    cmake -G"Visual Studio 16 2019" -T LLVM ..
 
 When using CMake with the Ninja generator, set the ``CMAKE_C_COMPILER`` and
 ``CMAKE_CXX_COMPILER`` variables to clang-cl:

@@ -16,10 +16,12 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
-namespace mlir {
+using namespace mlir;
 
 namespace {
-struct TestPadFusionPass : public PassWrapper<TestPadFusionPass, FunctionPass> {
+struct TestPadFusionPass
+    : public PassWrapper<TestPadFusionPass, OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestPadFusionPass)
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
@@ -29,20 +31,19 @@ struct TestPadFusionPass : public PassWrapper<TestPadFusionPass, FunctionPass> {
   StringRef getArgument() const final { return "test-linalg-pad-fusion"; }
   StringRef getDescription() const final { return "Test PadOp fusion"; }
 
-  void runOnFunction() override {
+  void runOnOperation() override {
     MLIRContext *context = &getContext();
-    FuncOp funcOp = getFunction();
     RewritePatternSet patterns(context);
-    linalg::populateFusePadTensorWithProducerLinalgOpPatterns(patterns);
-    if (failed(applyPatternsAndFoldGreedily(funcOp.getBody(),
-                                            std::move(patterns))))
+    linalg::populateFuseTensorPadWithProducerLinalgOpPatterns(patterns);
+    if (failed(
+            applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))))
       return signalPassFailure();
   }
 };
 } // namespace
 
+namespace mlir {
 namespace test {
 void registerTestPadFusion() { PassRegistration<TestPadFusionPass>(); }
 } // namespace test
-
 } // namespace mlir

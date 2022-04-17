@@ -25,6 +25,11 @@ ConstantBounds::~ConstantBounds() = default;
 void ConstantBounds::set_lbounds(ConstantSubscripts &&lb) {
   CHECK(lb.size() == shape_.size());
   lbounds_ = std::move(lb);
+  for (std::size_t j{0}; j < shape_.size(); ++j) {
+    if (shape_[j] == 0) {
+      lbounds_[j] = 1;
+    }
+  }
 }
 
 void ConstantBounds::SetLowerBoundsToOne() {
@@ -68,7 +73,7 @@ bool ConstantBounds::IncrementSubscripts(
     if (++indices[k] < lb + shape_[k]) {
       return true;
     } else {
-      CHECK(indices[k] == lb + shape_[k]);
+      CHECK(indices[k] == lb + std::max<ConstantSubscript>(shape_[k], 1));
       indices[k] = lb;
     }
   }
@@ -342,5 +347,8 @@ bool ComponentCompare::operator()(SymbolRef x, SymbolRef y) const {
   return semantics::SymbolSourcePositionCompare{}(x, y);
 }
 
+#ifdef _MSC_VER // disable bogus warning about missing definitions
+#pragma warning(disable : 4661)
+#endif
 INSTANTIATE_CONSTANT_TEMPLATES
 } // namespace Fortran::evaluate

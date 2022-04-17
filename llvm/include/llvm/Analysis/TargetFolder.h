@@ -21,12 +21,13 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/IRBuilderFolder.h"
 
 namespace llvm {
 
+class Constant;
 class DataLayout;
+class Type;
 
 /// TargetFolder - Create constants with target dependent folding.
 class TargetFolder final : public IRBuilderFolder {
@@ -57,6 +58,14 @@ public:
     return nullptr;
   }
 
+  Value *FoldAnd(Value *LHS, Value *RHS) const override {
+    auto *LC = dyn_cast<Constant>(LHS);
+    auto *RC = dyn_cast<Constant>(RHS);
+    if (LC && RC)
+      return Fold(ConstantExpr::getAnd(LC, RC));
+    return nullptr;
+  }
+
   Value *FoldOr(Value *LHS, Value *RHS) const override {
     auto *LC = dyn_cast<Constant>(LHS);
     auto *RC = dyn_cast<Constant>(RHS);
@@ -84,6 +93,16 @@ public:
       else
         return Fold(ConstantExpr::getGetElementPtr(Ty, PC, IdxList));
     }
+    return nullptr;
+  }
+
+  Value *FoldSelect(Value *C, Value *True, Value *False) const override {
+    auto *CC = dyn_cast<Constant>(C);
+    auto *TC = dyn_cast<Constant>(True);
+    auto *FC = dyn_cast<Constant>(False);
+    if (CC && TC && FC)
+      return Fold(ConstantExpr::getSelect(CC, TC, FC));
+
     return nullptr;
   }
 
@@ -139,9 +158,6 @@ public:
   Constant *CreateAShr(Constant *LHS, Constant *RHS,
                        bool isExact = false) const override {
     return Fold(ConstantExpr::getAShr(LHS, RHS, isExact));
-  }
-  Constant *CreateAnd(Constant *LHS, Constant *RHS) const override {
-    return Fold(ConstantExpr::getAnd(LHS, RHS));
   }
   Constant *CreateXor(Constant *LHS, Constant *RHS) const override {
     return Fold(ConstantExpr::getXor(LHS, RHS));
@@ -241,11 +257,6 @@ public:
   //===--------------------------------------------------------------------===//
   // Other Instructions
   //===--------------------------------------------------------------------===//
-
-  Constant *CreateSelect(Constant *C, Constant *True,
-                         Constant *False) const override {
-    return Fold(ConstantExpr::getSelect(C, True, False));
-  }
 
   Constant *CreateExtractElement(Constant *Vec, Constant *Idx) const override {
     return Fold(ConstantExpr::getExtractElement(Vec, Idx));

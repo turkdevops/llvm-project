@@ -22,12 +22,11 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/TargetFolder.h"
-#include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilderFolder.h"
-#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 
 namespace llvm {
+class Constant;
 
 /// InstSimplifyFolder - Use InstructionSimplify to fold operations to existing
 /// values. Also applies target-specific constant folding when not using
@@ -52,6 +51,10 @@ public:
     return SimplifyAddInst(LHS, RHS, HasNUW, HasNSW, SQ);
   }
 
+  Value *FoldAnd(Value *LHS, Value *RHS) const override {
+    return SimplifyAndInst(LHS, RHS, SQ);
+  }
+
   Value *FoldOr(Value *LHS, Value *RHS) const override {
     return SimplifyOrInst(LHS, RHS, SQ);
   }
@@ -63,6 +66,10 @@ public:
   Value *FoldGEP(Type *Ty, Value *Ptr, ArrayRef<Value *> IdxList,
                  bool IsInBounds = false) const override {
     return SimplifyGEPInst(Ty, Ptr, IdxList, IsInBounds, SQ);
+  }
+
+  Value *FoldSelect(Value *C, Value *True, Value *False) const override {
+    return SimplifySelectInst(C, True, False, SQ);
   }
 
   //===--------------------------------------------------------------------===//
@@ -117,9 +124,6 @@ public:
   Value *CreateAShr(Constant *LHS, Constant *RHS,
                     bool isExact = false) const override {
     return ConstFolder.CreateAShr(LHS, RHS, isExact);
-  }
-  Value *CreateAnd(Constant *LHS, Constant *RHS) const override {
-    return ConstFolder.CreateAnd(LHS, RHS);
   }
   Value *CreateXor(Constant *LHS, Constant *RHS) const override {
     return ConstFolder.CreateXor(LHS, RHS);
@@ -219,11 +223,6 @@ public:
   //===--------------------------------------------------------------------===//
   // Other Instructions
   //===--------------------------------------------------------------------===//
-
-  Value *CreateSelect(Constant *C, Constant *True,
-                      Constant *False) const override {
-    return ConstFolder.CreateSelect(C, True, False);
-  }
 
   Value *CreateExtractElement(Constant *Vec, Constant *Idx) const override {
     return ConstFolder.CreateExtractElement(Vec, Idx);

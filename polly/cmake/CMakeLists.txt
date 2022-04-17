@@ -112,12 +112,12 @@ set(POLLY_EXPORTS
 foreach(tgt IN LISTS POLLY_CONFIG_EXPORTED_TARGETS)
   get_target_property(tgt_type ${tgt} TYPE)
   if (tgt_type STREQUAL "EXECUTABLE")
-    set(tgt_prefix "${CMAKE_INSTALL_BINDIR}/")
+    set(tgt_prefix "${CMAKE_INSTALL_BINDIR}")
   else()
-    set(tgt_prefix "${CMAKE_INSTALL_LIBDIR}/")
+    set(tgt_prefix "${CMAKE_INSTALL_LIBDIR}")
   endif()
 
-  extend_path(tgt_path "\${POLLY_INSTALL_PREFIX}" "${tgt_prefix}$<TARGET_FILE_NAME:${tgt}>")
+  extend_path(tgt_path "\${POLLY_INSTALL_PREFIX}" "${tgt_prefix}/$<TARGET_FILE_NAME:${tgt}>")
 
   if (NOT tgt_type STREQUAL "INTERFACE_LIBRARY")
     set(POLLY_EXPORTS

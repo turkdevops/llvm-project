@@ -265,6 +265,13 @@ public:
   /// Allow a diagnostic to be converted to 'failure'.
   operator LogicalResult() const;
 
+  /// Allow a diagnostic to be converted to FailureOr<T>. Always results in
+  /// 'failure' because this cast cannot possibly return an object of 'T'.
+  template <typename T>
+  operator FailureOr<T>() const {
+    return failure();
+  }
+
 private:
   Diagnostic(const Diagnostic &rhs) = delete;
   Diagnostic &operator=(const Diagnostic &rhs) = delete;
@@ -346,6 +353,14 @@ public:
   /// Allow an inflight diagnostic to be converted to 'failure', otherwise
   /// 'success' if this is an empty diagnostic.
   operator LogicalResult() const;
+
+  /// Allow an inflight diagnostic to be converted to FailureOr<T>. Always
+  /// results in 'failure' because this cast cannot possibly return an object of
+  /// 'T'.
+  template <typename T>
+  operator FailureOr<T>() const {
+    return failure();
+  }
 
 private:
   InFlightDiagnostic &operator=(const InFlightDiagnostic &) = delete;
@@ -431,8 +446,9 @@ public:
   }
 
   /// Emit a diagnostic using the registered issue handler if present, or with
-  /// the default behavior if not.
-  void emit(Diagnostic diag);
+  /// the default behavior if not. The diagnostic instance is consumed in the
+  /// process.
+  void emit(Diagnostic &&diag);
 
 private:
   friend class MLIRContextImpl;
@@ -563,7 +579,7 @@ protected:
 
 private:
   /// Convert a location into the given memory buffer into an SMLoc.
-  llvm::SMLoc convertLocToSMLoc(FileLineColLoc loc);
+  SMLoc convertLocToSMLoc(FileLineColLoc loc);
 
   /// Given a location, returns the first nested location (including 'loc') that
   /// can be shown to the user.

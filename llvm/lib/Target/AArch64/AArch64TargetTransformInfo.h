@@ -313,6 +313,10 @@ public:
     return 2;
   }
 
+  bool emitGetActiveLaneMask() const {
+    return ST->hasSVE();
+  }
+
   bool supportsScalableVectors() const { return ST->hasSVE(); }
 
   bool enableScalableVectorization() const { return ST->hasSVE(); }
@@ -326,7 +330,8 @@ public:
 
   InstructionCost getShuffleCost(TTI::ShuffleKind Kind, VectorType *Tp,
                                  ArrayRef<int> Mask, int Index,
-                                 VectorType *SubTp);
+                                 VectorType *SubTp,
+                                 ArrayRef<Value *> Args = None);
   /// @}
 };
 
